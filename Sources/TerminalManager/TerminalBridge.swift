@@ -224,8 +224,8 @@ final class TerminalBridge: @unchecked Sendable {
 
         func flush() {
             if let current, !tabs.isEmpty {
-                windows.append(WindowSnapshot(id: current.id, miniaturized: current.mini, frontmost: current.front,
-                                              visible: current.visible,
+                windows.append(WindowSnapshot(id: current.id, miniaturized: current.mini, visible: current.visible,
+                                              frontmost: current.front,
                                               title: current.title, tabs: tabs))
             }
             current = nil
