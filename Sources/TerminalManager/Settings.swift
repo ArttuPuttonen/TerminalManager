@@ -8,7 +8,7 @@ final class Settings {
 
     private init() {
         defaults.register(defaults: [
-            Keys.autoHide: true,
+            Keys.autoHide: false, // off: hiding a window you're still thinking in is jarring
             Keys.notifications: true,
             Keys.sound: true,
             Keys.quietSeconds: 4.0,
@@ -17,7 +17,8 @@ final class Settings {
     }
 
     private enum Keys {
-        static let autoHide = "autoHide"
+        // New key so earlier installs also start with auto-hide off.
+        static let autoHide = "autoHideEnabled"
         static let notifications = "notifications"
         static let sound = "sound"
         static let quietSeconds = "quietSeconds"
@@ -25,7 +26,7 @@ final class Settings {
         static let keepMinimizedInBar = "keepMinimizedInBar"
     }
 
-    /// Hide a Terminal window automatically once it goes back to working on its own.
+    /// Hide a Terminal window automatically once it goes back to working on its own. Opt-in.
     var autoHide: Bool {
         get { defaults.bool(forKey: Keys.autoHide) }
         set { defaults.set(newValue, forKey: Keys.autoHide) }
