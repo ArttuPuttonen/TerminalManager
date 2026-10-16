@@ -112,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quietItem)
 
         menu.addItem(.separator())
+        add(to: menu, "Copy Diagnostics", #selector(copyDiagnostics))
         menu.addItem(NSMenuItem(title: "Quit Terminal Manager", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
@@ -135,6 +136,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func nextAttention() { store.showNextNeedingAttention() }
     @objc private func hideAll() { store.hideAll() }
+    @objc private func copyDiagnostics() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(store.diagnostics, forType: .string)
+    }
     @objc private func toggleKeepInBar() { Settings.shared.keepMinimizedInBar.toggle() }
     @objc private func toggleBar() { bar.userHidden.toggle() }
     @objc private func openAutomationSettings() { Permissions.openAutomationSettings() }

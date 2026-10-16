@@ -76,6 +76,7 @@ final class SessionStore: ObservableObject {
         for snapshot in snapshots where !updated.contains(where: { $0.id == snapshot.id }) {
             let window = ManagedWindow(id: snapshot.id)
             window.onStateChange = { [weak self] window, old, new in self?.stateChanged(window, from: old, to: new) }
+            window.onNeedsYou = { [weak self] window in self?.needsYou(window) }
             window.onAutoHide = { [weak self] window in self?.hide(window) }
             updated.append(window)
         }
@@ -154,17 +155,25 @@ final class SessionStore: ObservableObject {
         refreshSoon()
     }
 
+    var diagnostics: String {
+        let header = "Terminal Manager diagnostics — \(Date())\nquiet=\(Settings.shared.quietSeconds)s accessDenied=\(accessDenied) terminalFrontmost=\(TerminalBridge.isTerminalFrontmost)"
+        return ([header] + windows.map(\.diagnostics)).joined(separator: "\n")
+    }
+
     func window(withID id: Int) -> ManagedWindow? {
         windows.first { $0.id == id }
     }
 
     // MARK: Notifications
 
+    private func needsYou(_ window: ManagedWindow) {
+        guard !window.isViewed else { return }
+        Notifier.shared.post(for: window, title: "\(window.name) needs you", body: window.detail)
+    }
+
     private func stateChanged(_ window: ManagedWindow, from old: ActivityState, to new: ActivityState) {
         if window.isViewed { return }
         switch new {
-        case .needsInput where old == .working:
-            Notifier.shared.post(for: window, title: "\(window.name) needs you", body: window.detail)
         case .done:
             Notifier.shared.post(for: window, title: "\(window.name) finished",
                                  body: "The command finished in \((window.directory as NSString).abbreviatingWithTildeInPath).")

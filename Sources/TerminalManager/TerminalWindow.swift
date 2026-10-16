@@ -56,8 +56,24 @@ final class TabMonitor {
 
     private var commandStartedAt: Date?
     private var lastCPU: (group: pid_t, seconds: Double, at: Date)?
-    private var cpuBusyUntil = Date.distantPast
+    private var lastCPUHot = Date.distantPast
     private var lastDirectoryCheck = Date.distantPast
+    /// Start of the current unbroken stretch of activity (output or CPU), if any.
+    private var activeSince: Date?
+    /// When the latest stretch of real work began, to judge whether going quiet deserves a chime.
+    private var workStartedAt: Date?
+    private var lastAlertAt = Date.distantPast
+    /// Set on the tick where the tab stops working after real work; read once by the window.
+    private(set) var alertPending = false
+    private(set) var diagnostics = ""
+
+    /// A job counts as busy on CPU above this share of one core.
+    private static let cpuThreshold = 0.15
+    /// Going from "needs you" back to "working" takes this much unbroken activity,
+    /// so an occasional redraw or timer tick from a waiting program doesn't count.
+    private static let resumeAfter: TimeInterval = 3
+    /// Only chime if it worked at least this long before going quiet.
+    private static let minimumWorkForAlert: TimeInterval = 5
 
     private static let shells: Set<String> = ["zsh", "bash", "fish", "sh", "tcsh", "csh", "ksh", "dash", "nu", "-zsh", "-bash"]
 
@@ -68,10 +84,12 @@ final class TabMonitor {
     /// Re-evaluates the state. `viewed` means you are looking at this tab right now.
     func update(viewed: Bool) {
         let now = Date()
+        alertPending = false
         let procs = ProcessInspector.processes(onTTY: tty)
         guard !procs.isEmpty else { return }
         let activity = ProcessInspector.ttyActivity(tty)
         if let activity { lastInput = activity.lastInput }
+        let lastOutput = activity?.lastOutput ?? .distantPast
 
         // The shell is the first process Terminal started in this tab (usually a child of `login`).
         let pids = Set(procs.map(\.pid))
@@ -88,10 +106,12 @@ final class TabMonitor {
         }
 
         var newState: ActivityState
+        var cpuRate = 0.0
         if commandRunning {
             if commandStartedAt == nil {
                 commandStartedAt = now
                 lastCPU = nil
+                activeSince = nil
             }
             let job = procs.filter { $0.groupID == foreground }
             processName = job.first { $0.pid == foreground }?.name ?? job.first?.name ?? ""
@@ -100,24 +120,32 @@ final class TabMonitor {
             let cpu = job.reduce(0) { $0 + ProcessInspector.cpuSeconds(pid: $1.pid) }
             if let last = lastCPU, last.group == foreground {
                 let elapsed = now.timeIntervalSince(last.at)
-                if elapsed > 0, (cpu - last.seconds) / elapsed > 0.05 {
-                    cpuBusyUntil = now.addingTimeInterval(2)
-                }
+                if elapsed > 0 { cpuRate = (cpu - last.seconds) / elapsed }
+                if cpuRate > Self.cpuThreshold { lastCPUHot = now }
             }
             lastCPU = (foreground, cpu, now)
 
-            let lastOutput = activity?.lastOutput ?? .distantPast
-            let quiet = now.timeIntervalSince(lastOutput) >= Settings.shared.quietSeconds
-            let typingRecently = now.timeIntervalSince(lastInput) < 2
-            let busy = !quiet || now < cpuBusyUntil
-
-            if busy && !(state == .needsInput && typingRecently) {
-                newState = .working
-            } else if busy {
-                // Output that is just the echo of your typing does not count as "back to work".
-                newState = state
+            // tty timestamps have ~1 s precision, so "recent" means within 1.5 s.
+            let lastActivity = max(lastOutput, lastCPUHot)
+            let activeNow = now.timeIntervalSince(lastActivity) < 1.5
+            if activeNow {
+                if activeSince == nil { activeSince = now }
             } else {
-                newState = .needsInput
+                activeSince = nil
+            }
+            let activeFor = activeSince.map { now.timeIntervalSince($0) } ?? 0
+            let quiet = now.timeIntervalSince(lastActivity) >= Settings.shared.quietSeconds
+            let typingRecently = now.timeIntervalSince(lastInput) < 2
+
+            switch state {
+            case .working:
+                newState = quiet ? .needsInput : .working
+            case .needsInput:
+                // Needs sustained activity, and output while you type is just your own echo.
+                newState = activeFor >= Self.resumeAfter && !typingRecently ? .working : .needsInput
+            case .idle, .done:
+                // A command you just started: show it working right away.
+                newState = activeNow ? .working : (quiet ? .needsInput : state)
             }
         } else {
             processName = shell?.name.trimmingCharacters(in: CharacterSet(charactersIn: "-")) ?? ""
@@ -128,14 +156,36 @@ final class TabMonitor {
                 newState = .idle
             }
             commandStartedAt = nil
+            activeSince = nil
         }
 
         if newState == .working {
             if workingSince == nil { workingSince = now }
+            if workStartedAt == nil { workStartedAt = now }
         } else {
             workingSince = nil
         }
+
+        // Chime once per wait: only after real work, and not again until you've typed something.
+        if state == .working, newState == .needsInput {
+            let workedFor = workStartedAt.map { now.timeIntervalSince($0) } ?? 0
+            let answeredSinceLastAlert = lastInput > lastAlertAt
+            if workedFor >= Self.minimumWorkForAlert, answeredSinceLastAlert {
+                alertPending = true
+                lastAlertAt = now
+            }
+            workStartedAt = nil
+        }
+        if newState == .idle { workStartedAt = nil }
         state = newState
+
+        diagnostics = String(
+            format: "%@ state=%@ cmd=%@ fg=%d shell=%@ out=%.1fs ago in=%.1fs ago cpu=%.0f%%  procs=%@",
+            tty, state.rawValue, commandRunning ? processName : "-", foreground,
+            shell.map { "\($0.name)(\($0.pid)/pg\($0.groupID))" } ?? "none",
+            now.timeIntervalSince(lastOutput), now.timeIntervalSince(lastInput), cpuRate * 100,
+            procs.map { "\($0.name):\($0.pid)/pg\($0.groupID)" }.joined(separator: ",")
+        )
     }
 
     /// Short description of the program, for the pill's second line.
@@ -162,6 +212,8 @@ final class ManagedWindow: ObservableObject, Identifiable {
 
     /// Called when the state changes: (window, old state, new state).
     var onStateChange: ((ManagedWindow, ActivityState, ActivityState) -> Void)?
+    /// Called when a tab finished real work and now waits for you (at most once per wait).
+    var onNeedsYou: ((ManagedWindow) -> Void)?
     /// Called when the window should go back to the Dock on its own.
     var onAutoHide: ((ManagedWindow) -> Void)?
 
@@ -185,6 +237,13 @@ final class ManagedWindow: ObservableObject, Identifiable {
             let ua = monitors[a.tty]?.state.urgency ?? 0, ub = monitors[b.tty]?.state.urgency ?? 0
             return ua != ub ? ua < ub : (!a.selected && b.selected)
         }
+    }
+
+    /// What each tab looks like to the detector, for "Copy Diagnostics".
+    var diagnostics: String {
+        "Window \(id) \"\(name)\" state=\(state.rawValue) viewed=\(isViewed) hidden=\(isHidden)\n"
+            + tabs.map { "  tab \($0.index)\($0.selected ? "*" : ""): " + (monitors[$0.tty]?.diagnostics ?? $0.tty) }
+                .joined(separator: "\n")
     }
 
     func apply(_ snapshot: WindowSnapshot) {
@@ -242,6 +301,9 @@ final class ManagedWindow: ObservableObject, Identifiable {
             let old = state
             state = newState
             onStateChange?(self, old, newState)
+        }
+        if tabs.contains(where: { monitors[$0.tty]?.alertPending == true }) {
+            onNeedsYou?(self)
         }
 
         // Auto-hide: you answered, it's working again, and you stopped typing.
