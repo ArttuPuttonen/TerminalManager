@@ -6,8 +6,8 @@ import Combine
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [TerminalSession] = []
 
-    /// Where the top bar is on screen, so windows can open just below it.
-    var barFrame: (() -> NSRect?)?
+    /// Where a session's pill is on screen, so its window can open right below it.
+    var pillFrame: ((TerminalSession) -> NSRect?)?
     /// Called after every poll so the bar and menu bar icon can refresh.
     var onTick: (() -> Void)?
 
@@ -114,13 +114,13 @@ final class SessionStore: ObservableObject {
     // MARK: Showing and hiding
 
     func show(_ session: TerminalSession) {
-        session.show(below: barFrame?())
+        session.show(below: pillFrame?(session))
         Notifier.shared.clear(for: session)
     }
 
     func toggle(_ session: TerminalSession) {
         if session.isFrontmost {
-            session.hide()
+            session.hide(animated: true)
         } else {
             show(session)
         }
@@ -136,7 +136,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func autoHide(_ session: TerminalSession) {
-        session.hide()
+        session.hide(animated: true)
         // Hand focus back to whatever you were doing, unless another terminal is still open.
         if !sessions.contains(where: { $0.window.isVisible }) {
             NSApp.deactivate()

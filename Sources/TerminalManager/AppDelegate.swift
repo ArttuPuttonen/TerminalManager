@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         buildMainMenu()
 
         bar = TopBarPanel(store: store)
-        store.barFrame = { [weak self] in self?.bar.frame }
+        store.pillFrame = { [weak self] session in self?.bar.pillFrameOnScreen(for: session) }
         store.onTick = { [weak self] in self?.refresh() }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.bar.relayout() }
+            MainActor.assumeIsolated { self?.bar.relayout(animated: false) }
         }
     }
 
@@ -166,7 +166,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Main menu (keyboard shortcuts + copy/paste while a terminal is focused)
 
     @objc private func closeTerminalWindow() {
-        NSApp.keyWindow?.orderOut(nil)
+        // Goes through windowShouldClose, which hides (never kills) a terminal. Instant: keyboard action.
+        NSApp.keyWindow?.performClose(nil)
     }
 
     private func buildMainMenu() {
