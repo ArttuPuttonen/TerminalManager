@@ -20,7 +20,8 @@ How it works:
 1. Click a pill to bring that Terminal window to the front. Click it again to hide it. Hidden windows live in the bar, not in the Dock, so your desktop and Dock stay clean.
 2. When a terminal needs you, its pill turns orange, you get a macOS notification and a sound, and the menu bar icon shows how many are waiting. Click the notification to jump straight to that window.
 3. Answer it, then click the pill again (or the yellow button) to put the window away. If you'd rather have windows hide by themselves once the program is working again, turn on "Auto-Hide When Working Again" in the menu (off by default).
-4. Right-click a pill to **rename** it (the name becomes the tab's title in Terminal too), mark it **Keep Open** so it never auto-hides, or close the window.
+4. Opening a terminal from its pill hides the other open ones into the bar, so only one is on screen at a time ("One Terminal at a Time" in the menu; windows marked Keep Open stay).
+5. Right-click a pill to **rename** it (the name becomes the tab's title in Terminal too), mark it **Keep Open** so it never auto-hides, or close the window.
 
 If you minimize a window the usual way (yellow button or ⌘M), Terminal Manager tries to take it
 out of the Dock by making it invisible while it stays minimized, so nothing flashes. If macOS keeps

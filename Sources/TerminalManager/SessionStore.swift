@@ -109,6 +109,12 @@ final class SessionStore: ObservableObject {
 
     func show(_ window: ManagedWindow) {
         guard let tab = window.urgentTab ?? window.tabs.first else { return }
+        // One terminal at a time: put the others away (into the bar, not the Dock), except pinned ones.
+        if Settings.shared.oneAtATime {
+            for other in windows where other !== window && !other.isHidden && !other.keepOpen {
+                hide(other)
+            }
+        }
         bridge.show(windowID: window.id, tab: tab.index)
         window.assume(hidden: false, frontmost: true)
         Notifier.shared.clear(for: window)

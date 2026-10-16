@@ -103,6 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         let settings = Settings.shared
+        add(to: menu, "One Terminal at a Time", #selector(toggleOneAtATime), on: settings.oneAtATime)
         add(to: menu, "Auto-Hide When Working Again", #selector(toggleAutoHide), on: settings.autoHide)
         add(to: menu, "Take Minimized Windows Out of the Dock", #selector(toggleKeepInBar), on: settings.keepMinimizedInBar)
         add(to: menu, "Notifications", #selector(toggleNotifications), on: settings.notifications)
@@ -190,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleKeepInBar() { Settings.shared.keepMinimizedInBar.toggle() }
     @objc private func toggleBar() { bar.userHidden.toggle() }
     @objc private func openAutomationSettings() { Permissions.openAutomationSettings() }
+    @objc private func toggleOneAtATime() { Settings.shared.oneAtATime.toggle() }
     @objc private func toggleAutoHide() { Settings.shared.autoHide.toggle() }
     @objc private func toggleNotifications() { Settings.shared.notifications.toggle() }
     @objc private func toggleSound() { Settings.shared.sound.toggle() }

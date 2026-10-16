@@ -13,6 +13,7 @@ final class Settings {
             Keys.sound: true,
             Keys.quietSeconds: 4.0,
             Keys.keepMinimizedInBar: true,
+            Keys.oneAtATime: true,
         ])
     }
 
@@ -25,6 +26,7 @@ final class Settings {
         static let didSetUpLoginItem = "didSetUpLoginItem"
         // New key: the old setting meant the flashing method, this one the no-flash one.
         static let keepMinimizedInBar = "takeMinimizedOutOfDock"
+        static let oneAtATime = "oneAtATime"
     }
 
     /// Hide a Terminal window automatically once it goes back to working on its own. Opt-in.
@@ -53,6 +55,12 @@ final class Settings {
     var keepMinimizedInBar: Bool {
         get { defaults.bool(forKey: Keys.keepMinimizedInBar) }
         set { defaults.set(newValue, forKey: Keys.keepMinimizedInBar) }
+    }
+
+    /// Opening a terminal from its pill hides the other open ones (except "Keep Open" ones).
+    var oneAtATime: Bool {
+        get { defaults.bool(forKey: Keys.oneAtATime) }
+        set { defaults.set(newValue, forKey: Keys.oneAtATime) }
     }
 
     /// Whether we already turned on "Open at Login" once (so we never override your choice).
