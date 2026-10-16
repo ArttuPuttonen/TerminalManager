@@ -12,7 +12,7 @@ full pills with names; move away and it shrinks back.
 |-------|---------|
 | 🔵 blue | **Working.** Leave it alone. |
 | 🟠 orange, pinging | **Needs you.** Claude is asking for permission, asking a question, or wants a plan approved. |
-| 🟢 green | **Done.** It finished something and you haven't looked at it yet. Turns gray once you have. |
+| 🟢 green | **Done.** It finished something you haven't seen yet. Stays green while you look at it, and turns gray once you've seen it and moved on (hid it or switched away). |
 | ⚪ gray | **Idle.** Nothing going on, nothing pending. |
 
 How it works:
@@ -47,7 +47,7 @@ is saved as `settings.json.terminalmanager-backup`). Claude Code then reports ea
 |---|---|
 | You send a prompt, it runs tools | Working |
 | It asks for permission, uses AskUserQuestion, or presents a plan | Needs you (chime) |
-| It finishes its turn | Done (chime), gray once you've looked |
+| It finishes its turn | Done (chime), gray once you've seen it and moved on |
 
 It applies to Claude sessions started after connecting. Disconnect from the same menu.
 

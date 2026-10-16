@@ -68,7 +68,11 @@ final class TabMonitor {
     private(set) var diagnostics = ""
     /// What Claude said it needs (e.g. "Claude needs your permission to use Bash"), when hooks are on.
     private(set) var hookDetail = ""
-    private var lastViewedAt = Date.distantPast
+    /// When the current "done" happened; identifies it so seeing it can retire it.
+    private var doneAt: Date?
+    /// The latest "done" you have looked at, and the latest one you looked at and then left.
+    private var seenDoneAt: Date?
+    private var acknowledgedDoneAt: Date?
 
     /// A job counts as busy on CPU above this share of one core.
     private static let cpuThreshold = 0.15
@@ -111,7 +115,6 @@ final class TabMonitor {
         var newState: ActivityState
         var cpuRate = 0.0
         var source = "guess"
-        if viewed { lastViewedAt = now }
         if commandRunning {
             if commandStartedAt == nil {
                 commandStartedAt = now
@@ -149,12 +152,7 @@ final class TabMonitor {
                 // Exact: Claude Code told us what it's doing (see ClaudeHooks).
                 source = "claude-hooks"
                 hookDetail = hook.detail
-                if hook.state == .done {
-                    // Green until you've looked at it, then gray.
-                    newState = hook.time > lastViewedAt ? .done : .idle
-                } else {
-                    newState = hook.state
-                }
+                newState = hook.state == .done ? doneState(finishedAt: hook.time, viewed: viewed) : hook.state
             } else {
                 // Guess from output and CPU. Without hooks we can't tell "asking you something"
                 // from "finished", so going quiet after real work counts as done, never orange.
@@ -163,7 +161,7 @@ final class TabMonitor {
                 case .working:
                     if quiet {
                         let workedFor = workStartedAt.map { now.timeIntervalSince($0) } ?? 0
-                        newState = workedFor >= Self.minimumWorkForAlert && !viewed ? .done : .idle
+                        newState = workedFor >= Self.minimumWorkForAlert ? doneState(finishedAt: now, viewed: viewed) : .idle
                     } else {
                         newState = .working
                     }
@@ -172,8 +170,8 @@ final class TabMonitor {
                     // and output while you type is just your own echo.
                     if activeNow && (justStarted || (activeFor >= Self.resumeAfter && !typingRecently)) {
                         newState = .working
-                    } else if state == .done && viewed {
-                        newState = .idle
+                    } else if state == .done, let doneAt {
+                        newState = doneState(finishedAt: doneAt, viewed: viewed)
                     } else {
                         newState = state == .needsInput ? .idle : state
                     }
@@ -182,8 +180,10 @@ final class TabMonitor {
         } else {
             processName = shell?.name.trimmingCharacters(in: CharacterSet(charactersIn: "-")) ?? ""
             let ranFor = commandStartedAt.map { now.timeIntervalSince($0) } ?? 0
-            if (commandStartedAt != nil && ranFor > 5 && !viewed) || (state == .done && !viewed) {
-                newState = .done
+            if commandStartedAt != nil && ranFor > 5 {
+                newState = doneState(finishedAt: now, viewed: viewed)
+            } else if state == .done, let doneAt {
+                newState = doneState(finishedAt: doneAt, viewed: viewed)
             } else {
                 newState = .idle
             }
@@ -213,6 +213,23 @@ final class TabMonitor {
             now.timeIntervalSince(lastOutput), now.timeIntervalSince(lastInput), cpuRate * 100,
             procs.map { "\($0.name):\($0.pid)/pg\($0.groupID)" }.joined(separator: ",")
         )
+    }
+
+    /// Something finished at `finishedAt`. It stays green ("done") until you've looked at it
+    /// and then moved on (hid it, or switched to another window or app); then it's gray.
+    /// While you're looking at it, it stays green.
+    private func doneState(finishedAt: Date, viewed: Bool) -> ActivityState {
+        doneAt = finishedAt
+        if let acknowledged = acknowledgedDoneAt, acknowledged >= finishedAt { return .idle }
+        if viewed {
+            seenDoneAt = finishedAt
+            return .done
+        }
+        if let seen = seenDoneAt, seen >= finishedAt {
+            acknowledgedDoneAt = finishedAt
+            return .idle
+        }
+        return .done
     }
 
     /// Short description of the program, for the pill's second line.
