@@ -125,9 +125,24 @@ final class TerminalBridge: @unchecked Sendable {
                 set selected tab of w to tab \(tab) of w
             end try
             set index of w to 1
-            activate
         end tell
-        """)
+        """, then: { Self.bringTerminalForward() })
+    }
+
+    /// Makes Terminal the active app, raising only its front window.
+    ///
+    /// AppleScript's `activate` raises every Terminal window, so this uses the activation call
+    /// that brings forward just the key window. Since macOS 14 an app may only hand activation
+    /// to another app while it's active itself, so we briefly activate (you just clicked us)
+    /// and yield to Terminal.
+    @MainActor
+    static func bringTerminalForward() {
+        guard let terminal = terminalApp else { return }
+        NSApp.activate()
+        NSApp.yieldActivation(to: terminal)
+        if !terminal.activate(from: .current, options: []) {
+            _ = terminal.activate(options: [])
+        }
     }
 
     /// Hides the window without sending it to the Dock; its pill in the bar is the way back.
@@ -185,21 +200,31 @@ final class TerminalBridge: @unchecked Sendable {
         let source = """
         tell application id "com.apple.Terminal"
             do script "\(command)"
-            activate
         end tell
         """
         // Allowed even when Terminal isn't running: here launching it is the point.
-        queue.async { _ = self.execute(NSAppleScript(source: source)) }
+        queue.async {
+            _ = self.execute(NSAppleScript(source: source))
+            Task { @MainActor in Self.bringTerminalForward() }
+        }
     }
 
     /// Asks Terminal to close the window; Terminal itself warns if something is still running.
     func close(windowID: Int) {
         run("""
         tell application id "com.apple.Terminal"
-            activate
-            close window id \(windowID)
+            set w to window id \(windowID)
+            set miniaturized of w to false
+            set visible of w to true
+            set index of w to 1
         end tell
-        """)
+        """, then: {
+            // Bring it forward first, so Terminal's "Terminate running processes?" sheet is visible.
+            Self.bringTerminalForward()
+            self.run("""
+            tell application id "com.apple.Terminal" to close window id \(windowID)
+            """)
+        })
     }
 
     // MARK: Plumbing
