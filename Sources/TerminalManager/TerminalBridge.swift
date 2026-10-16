@@ -119,8 +119,8 @@ final class TerminalBridge: @unchecked Sendable {
         run("""
         tell application id "com.apple.Terminal"
             set w to window id \(windowID)
-            set miniaturized of w to false
             set visible of w to true
+            set miniaturized of w to false
             try
                 set selected tab of w to tab \(tab) of w
             end try
@@ -152,15 +152,12 @@ final class TerminalBridge: @unchecked Sendable {
         """)
     }
 
-    /// Takes a window you minimized with the yellow button out of the Dock and hides it instead.
+    /// Takes a window you minimized with the yellow button out of the Dock by making it
+    /// invisible while it stays minimized. Never un-minimizes it, so nothing flashes; if macOS
+    /// keeps it in the Dock anyway, it simply stays there.
     func moveFromDockToBar(windowID: Int) {
         run("""
-        tell application id "com.apple.Terminal"
-            set w to window id \(windowID)
-            set visible of w to false
-            set miniaturized of w to false
-            set visible of w to false
-        end tell
+        tell application id "com.apple.Terminal" to set visible of window id \(windowID) to false
         """)
     }
 

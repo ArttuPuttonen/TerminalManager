@@ -15,6 +15,8 @@ final class SessionStore: ObservableObject {
     private var timer: Timer?
     private var snapshotInFlight = false
     private var lastSnapshot = Date.distantPast
+    /// How often we tried to take each minimized window out of the Dock.
+    private var dockAttempts: [Int: Int] = [:]
 
     init() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -83,9 +85,16 @@ final class SessionStore: ObservableObject {
         for window in updated {
             guard let snapshot = byID[window.id] else { continue }
             window.apply(snapshot)
-            // Minimized with the yellow button (or ⌘M)? Keep it in the bar, not the Dock.
-            if snapshot.miniaturized, Settings.shared.keepMinimizedInBar {
-                bridge.moveFromDockToBar(windowID: window.id)
+            // Minimized with the yellow button (or ⌘M) and still in the Dock? Take it out.
+            // At most twice per minimize, in case macOS won't let it go.
+            if snapshot.miniaturized && snapshot.visible {
+                let attempts = dockAttempts[window.id, default: 0]
+                if Settings.shared.keepMinimizedInBar, attempts < 2 {
+                    dockAttempts[window.id] = attempts + 1
+                    bridge.moveFromDockToBar(windowID: window.id)
+                }
+            } else if !snapshot.miniaturized {
+                dockAttempts[window.id] = nil
             }
         }
         let removed = windows.filter { byID[$0.id] == nil }
