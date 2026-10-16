@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.store.show(window)
         }
         Permissions.setUpLoginItemOnce()
+        ClaudeHooks.refreshIfConnectedElsewhere()
         refresh()
 
         NotificationCenter.default.addObserver(
@@ -94,6 +95,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(to: menu, bar.userHidden ? "Show Top Bar" : "Hide Top Bar", #selector(toggleBar))
 
         menu.addItem(.separator())
+        if ClaudeHooks.isConnected {
+            add(to: menu, "Claude Code Connected (Exact Status)", #selector(disconnectClaude), on: true)
+        } else {
+            add(to: menu, "Connect Claude Code for Exact Status…", #selector(connectClaude))
+        }
+
+        menu.addItem(.separator())
         let settings = Settings.shared
         add(to: menu, "Auto-Hide When Working Again", #selector(toggleAutoHide), on: settings.autoHide)
         add(to: menu, "Take Minimized Windows Out of the Dock", #selector(toggleKeepInBar), on: settings.keepMinimizedInBar)
@@ -138,6 +146,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func nextAttention() { store.showNextNeedingAttention() }
     @objc private func hideAll() { store.hideAll() }
+
+    @objc private func connectClaude() {
+        let alert = NSAlert()
+        alert.messageText = "Connect Claude Code?"
+        alert.informativeText = """
+        Claude Code will tell Terminal Manager exactly when it's working, when it asks you something         (permission, a question, a plan to approve) and when it's done, so pills are never guessed.
+
+        This adds a few hooks to ~/.claude/settings.json that run Terminal Manager for a moment.         Your other settings and hooks stay as they are, and a backup is saved next to the file.         It takes effect for Claude sessions started from now on. You can disconnect any time from this menu.
+        """
+        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try ClaudeHooks.connect()
+        } catch {
+            showError("Couldn't update ~/.claude/settings.json", error)
+        }
+    }
+
+    @objc private func disconnectClaude() {
+        do {
+            try ClaudeHooks.disconnect()
+        } catch {
+            showError("Couldn't update ~/.claude/settings.json", error)
+        }
+    }
+
+    private func showError(_ title: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        NSApp.activate()
+        alert.runModal()
+    }
     @objc private func newWindow() { store.newWindow() }
     @objc private func newWindowInFolder() { store.newWindowInFolder() }
     @objc private func copyDiagnostics() {

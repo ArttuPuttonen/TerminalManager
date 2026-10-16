@@ -10,10 +10,10 @@ full pills with names; move away and it shrinks back.
 
 | Color | Meaning |
 |-------|---------|
-| 🟢 green dot | **Working.** A program is running and making progress (output or CPU). Leave it alone. |
-| 🟠 orange, pinging | **Needs you.** The program went quiet. It is probably asking you something. |
-| 🔵 blue | **Done.** A command that ran for a while finished and you haven't looked at it yet. |
-| ⚪ gray ring | **Idle.** Shell prompt, nothing running. |
+| 🔵 blue | **Working.** Leave it alone. |
+| 🟠 orange, pinging | **Needs you.** Claude is asking for permission, asking a question, or wants a plan approved. |
+| 🟢 green | **Done.** It finished something and you haven't looked at it yet. Turns gray once you have. |
+| ⚪ gray | **Idle.** Nothing going on, nothing pending. |
 
 How it works:
 
@@ -36,20 +36,26 @@ several tabs shows the most urgent tab.
 The menu bar icon has the list of windows, "Go to Next Terminal That Needs You", and settings:
 auto-hide, minimized windows to the bar, notifications, sounds, Open at Login, and how many seconds of silence count as "needs you".
 
-## How "needs you" is detected
+## How the status is known
 
-Terminal Manager asks Terminal (via AppleScript) which windows and tabs exist and which tty
-each tab uses. Then, for each tab, it looks at the kernel's process table and at the tty device itself:
+**Claude Code (exact).** Choose **Connect Claude Code for Exact Status…** in the menu bar menu.
+This adds hooks to `~/.claude/settings.json` (your other settings and hooks are kept, and a backup
+is saved as `settings.json.terminalmanager-backup`). Claude Code then reports each session's status itself:
 
-- If only the shell is in the foreground, the tab is **idle**. If a command just finished after running for more than 5 seconds while you weren't looking, it's **done**.
-- If a program is in the foreground and it printed something recently or is using CPU, it is **working**. The kernel timestamps a tty on every write, so we can see output without reading it.
-- If it has been silent for the configured time (default 4 s) and isn't using CPU, it **needs you**.
+| Claude Code event | Status |
+|---|---|
+| You send a prompt, it runs tools | Working |
+| It asks for permission, uses AskUserQuestion, or presents a plan | Needs you (chime) |
+| It finishes its turn | Done (chime), gray once you've looked |
 
-This works well with Claude Code: its spinner keeps printing while it works and stops when it
-asks for permission or finishes a turn.
+It applies to Claude sessions started after connecting. Disconnect from the same menu.
 
-A long, silent, low-CPU command (like `sleep 60`) will also show as "needs you". If that happens
-a lot, raise the silence threshold in the menu.
+**Everything else (a guess).** Terminal Manager asks Terminal (via AppleScript) which windows and tabs
+exist and which tty each uses, then looks at the kernel's process table and the tty device itself:
+
+- Only the shell in the foreground: **idle**. A command that ran for more than 5 seconds and finished while you weren't looking: **done**.
+- A program printing output or using CPU: **working**. The kernel timestamps a tty on every write, so we can see output without reading it.
+- A program that goes quiet after at least 5 seconds of work: **done**. Without hooks there's no way to tell "finished" from "asking you something", so a guess never shows orange.
 
 ## Build and install
 

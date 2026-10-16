@@ -7,17 +7,17 @@ enum ActivityState: String {
     case idle
     /// A program is running and producing output or using CPU — on autopilot.
     case working
-    /// A program is running but has gone quiet: it probably waits for you.
+    /// It's asking you something (permission, a question). Reported by Claude Code hooks.
     case needsInput
-    /// A long-running command finished and you have not looked at it yet.
+    /// Finished a stretch of work and you haven't looked at it yet.
     case done
 
     var color: SwiftUI.Color {
         switch self {
         case .idle: return .gray
-        case .working: return .green
+        case .working: return .blue
         case .needsInput: return .orange
-        case .done: return .blue
+        case .done: return .green
         }
     }
 
@@ -66,6 +66,9 @@ final class TabMonitor {
     /// Set on the tick where the tab stops working after real work; read once by the window.
     private(set) var alertPending = false
     private(set) var diagnostics = ""
+    /// What Claude said it needs (e.g. "Claude needs your permission to use Bash"), when hooks are on.
+    private(set) var hookDetail = ""
+    private var lastViewedAt = Date.distantPast
 
     /// A job counts as busy on CPU above this share of one core.
     private static let cpuThreshold = 0.15
@@ -107,6 +110,8 @@ final class TabMonitor {
 
         var newState: ActivityState
         var cpuRate = 0.0
+        var source = "guess"
+        if viewed { lastViewedAt = now }
         if commandRunning {
             if commandStartedAt == nil {
                 commandStartedAt = now
@@ -138,15 +143,41 @@ final class TabMonitor {
             let quiet = now.timeIntervalSince(lastActivity) >= Settings.shared.quietSeconds
             let typingRecently = now.timeIntervalSince(lastInput) < 2
 
-            switch state {
-            case .working:
-                newState = quiet ? .needsInput : .working
-            case .needsInput:
-                // Needs sustained activity, and output while you type is just your own echo.
-                newState = activeFor >= Self.resumeAfter && !typingRecently ? .working : .needsInput
-            case .idle, .done:
-                // A command you just started: show it working right away.
-                newState = activeNow ? .working : (quiet ? .needsInput : state)
+            hookDetail = ""
+            if let hook = ClaudeHooks.status(forTTY: tty),
+               hook.time >= (commandStartedAt ?? now).addingTimeInterval(-2) {
+                // Exact: Claude Code told us what it's doing (see ClaudeHooks).
+                source = "claude-hooks"
+                hookDetail = hook.detail
+                if hook.state == .done {
+                    // Green until you've looked at it, then gray.
+                    newState = hook.time > lastViewedAt ? .done : .idle
+                } else {
+                    newState = hook.state
+                }
+            } else {
+                // Guess from output and CPU. Without hooks we can't tell "asking you something"
+                // from "finished", so going quiet after real work counts as done, never orange.
+                let justStarted = now.timeIntervalSince(commandStartedAt ?? now) < 3
+                switch state {
+                case .working:
+                    if quiet {
+                        let workedFor = workStartedAt.map { now.timeIntervalSince($0) } ?? 0
+                        newState = workedFor >= Self.minimumWorkForAlert && !viewed ? .done : .idle
+                    } else {
+                        newState = .working
+                    }
+                case .idle, .done, .needsInput:
+                    // Needs sustained activity (a waiting program's occasional redraw isn't work),
+                    // and output while you type is just your own echo.
+                    if activeNow && (justStarted || (activeFor >= Self.resumeAfter && !typingRecently)) {
+                        newState = .working
+                    } else if state == .done && viewed {
+                        newState = .idle
+                    } else {
+                        newState = state == .needsInput ? .idle : state
+                    }
+                }
             }
         } else {
             processName = shell?.name.trimmingCharacters(in: CharacterSet(charactersIn: "-")) ?? ""
@@ -167,22 +198,17 @@ final class TabMonitor {
             workingSince = nil
         }
 
-        // Chime once per wait: only after real work, and not again until you've typed something.
-        if state == .working, newState == .needsInput {
-            let workedFor = workStartedAt.map { now.timeIntervalSince($0) } ?? 0
-            let answeredSinceLastAlert = lastInput > lastAlertAt
-            if workedFor >= Self.minimumWorkForAlert, answeredSinceLastAlert {
-                alertPending = true
-                lastAlertAt = now
-            }
-            workStartedAt = nil
+        // Chime once each time it starts asking you something.
+        if newState == .needsInput, state != .needsInput, now.timeIntervalSince(lastAlertAt) > 2 {
+            alertPending = true
+            lastAlertAt = now
         }
-        if newState == .idle { workStartedAt = nil }
+        if newState != .working { workStartedAt = nil }
         state = newState
 
         diagnostics = String(
-            format: "%@ state=%@ cmd=%@ fg=%d shell=%@ out=%.1fs ago in=%.1fs ago cpu=%.0f%%  procs=%@",
-            tty, state.rawValue, commandRunning ? processName : "-", foreground,
+            format: "%@ via=%@ state=%@ cmd=%@ fg=%d shell=%@ out=%.1fs ago in=%.1fs ago cpu=%.0f%%  procs=%@",
+            tty, source, state.rawValue, commandRunning ? processName : "-", foreground,
             shell.map { "\($0.name)(\($0.pid)/pg\($0.groupID))" } ?? "none",
             now.timeIntervalSince(lastOutput), now.timeIntervalSince(lastInput), cpuRate * 100,
             procs.map { "\($0.name):\($0.pid)/pg\($0.groupID)" }.joined(separator: ",")
@@ -293,7 +319,12 @@ final class ManagedWindow: ObservableObject, Identifiable {
         let program = monitor?.programLabel ?? ""
         var newDetail: String
         switch newState {
-        case .needsInput: newDetail = program.isEmpty ? "Needs you" : "\(program) · needs you"
+        case .needsInput:
+            if let asked = monitor?.hookDetail, !asked.isEmpty {
+                newDetail = asked.replacingOccurrences(of: "Claude needs your permission to use ", with: "Allow ")
+            } else {
+                newDetail = program.isEmpty ? "Needs you" : "\(program) · needs you"
+            }
         case .working: newDetail = program.isEmpty ? "Working" : program
         case .done: newDetail = "Finished"
         case .idle: newDetail = (directory as NSString).abbreviatingWithTildeInPath
