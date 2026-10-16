@@ -22,9 +22,10 @@ How it works:
 3. Answer it, then click the pill again (or the yellow button) to put the window away. If you'd rather have windows hide by themselves once the program is working again, turn on "Auto-Hide When Working Again" in the menu (off by default).
 4. Right-click a pill to **rename** it (the name becomes the tab's title in Terminal too), mark it **Keep Open** so it never auto-hides, or close the window.
 
-If you minimize a Terminal window the usual way (yellow button or ⌘M), Terminal Manager notices
-within a second and moves it from the Dock into the bar (you may see a quick flash). You can turn this off
-in the menu. When Terminal Manager quits, hidden windows go back to the Dock so they are never lost.
+Minimizing a window the usual way (yellow button or ⌘M) still sends it to the Dock, and its pill
+keeps working. To put a window away without the Dock, click its pill instead. There is an opt-in menu
+setting that moves minimized windows out of the Dock, but macOS has to un-minimize a window first, so
+it flashes briefly. When Terminal Manager quits, windows hidden in the bar go back to the Dock so they are never lost.
 
 The **+** at the end of the bar opens a new Terminal window (right-click it to pick a folder first).
 It only shows while you have at least one Terminal window open.

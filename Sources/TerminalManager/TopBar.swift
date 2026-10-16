@@ -108,7 +108,13 @@ final class TopBarPanel: NSPanel {
 
         barState.$expanded
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in MainActor.assumeIsolated { self?.relayout() } }
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    // Opening is instant (you're reaching for it); closing gets a short, soft shrink.
+                    guard let self else { return }
+                    self.relayout(animated: !self.barState.expanded)
+                }
+            }
             .store(in: &observers)
 
         // React right away when windows come and go (not on the next poll).
@@ -190,8 +196,8 @@ final class TopBarPanel: NSPanel {
 // MARK: - Views
 
 /// Whether the bar is collapsed to dots or expanded to pills. Hovering expands it
-/// after a short dwell (so passing by on the way to a browser tab doesn't), leaving
-/// collapses it after a moment, and it stays open while one of its menus is showing.
+/// immediately, leaving collapses it after a moment, and it stays open while one
+/// of its menus is showing.
 @MainActor
 final class BarState: ObservableObject {
     @Published private(set) var expanded = false
@@ -228,6 +234,11 @@ final class BarState: ObservableObject {
         pending?.cancel()
         let target = hovering || menuOpen
         guard target != expanded else { return }
+        if target {
+            // Expand the moment the mouse arrives.
+            expanded = true
+            return
+        }
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -236,7 +247,7 @@ final class BarState: ObservableObject {
             }
         }
         pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + (target ? 0.15 : 0.5), execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 }
 
@@ -267,9 +278,9 @@ struct BarView: View {
         let radius = expanded ? BarLayout.outerRadius : BarLayout.collapsedHeight / 2
         ZStack {
             if expanded {
-                pills.transition(.opacity.animation(.easeOut(duration: 0.15)))
+                pills.transition(.asymmetric(insertion: .identity, removal: .opacity.animation(.easeOut(duration: 0.1))))
             } else {
-                dots.transition(.opacity.animation(.easeOut(duration: 0.1)))
+                dots.transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.12)), removal: .identity))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

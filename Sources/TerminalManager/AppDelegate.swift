@@ -96,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         let settings = Settings.shared
         add(to: menu, "Auto-Hide When Working Again", #selector(toggleAutoHide), on: settings.autoHide)
-        add(to: menu, "Minimized Windows Go to the Bar, Not the Dock", #selector(toggleKeepInBar), on: settings.keepMinimizedInBar)
+        add(to: menu, "Move Minimized Windows Out of the Dock (Flashes)", #selector(toggleKeepInBar), on: settings.keepMinimizedInBar)
         add(to: menu, "Notifications", #selector(toggleNotifications), on: settings.notifications)
         add(to: menu, "Sounds", #selector(toggleSound), on: settings.sound)
         add(to: menu, "Open at Login", #selector(toggleLogin), on: Permissions.opensAtLogin)

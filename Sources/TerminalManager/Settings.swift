@@ -12,7 +12,8 @@ final class Settings {
             Keys.notifications: true,
             Keys.sound: true,
             Keys.quietSeconds: 4.0,
-            Keys.keepMinimizedInBar: true,
+            // Off: pulling a window out of the Dock means un-minimizing it first, which flashes.
+            Keys.keepMinimizedInBar: false,
         ])
     }
 
@@ -23,7 +24,8 @@ final class Settings {
         static let sound = "sound"
         static let quietSeconds = "quietSeconds"
         static let didSetUpLoginItem = "didSetUpLoginItem"
-        static let keepMinimizedInBar = "keepMinimizedInBar"
+        // New key so earlier installs also start with it off.
+        static let keepMinimizedInBar = "moveMinimizedToBar"
     }
 
     /// Hide a Terminal window automatically once it goes back to working on its own. Opt-in.
