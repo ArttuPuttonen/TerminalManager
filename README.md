@@ -22,6 +22,9 @@ If you minimize a Terminal window the usual way (yellow button or ⌘M), Termina
 within a second and moves it from the Dock into the bar (you may see a quick flash). You can turn this off
 in the menu. When Terminal Manager quits, hidden windows go back to the Dock so they are never lost.
 
+The **+** at the end of the bar opens a new Terminal window (right-click it to pick a folder first).
+It only shows while you have at least one Terminal window open.
+
 Pills are named after the folder the terminal is in, unless you rename them. A window with
 several tabs shows the most urgent tab.
 

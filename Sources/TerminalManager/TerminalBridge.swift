@@ -178,6 +178,20 @@ final class TerminalBridge: @unchecked Sendable {
         """)
     }
 
+    /// Opens a new Terminal window, optionally in a folder.
+    func newWindow(in directory: String? = nil) {
+        // Shell-quote the path, then escape the whole command for the AppleScript string.
+        let command = directory.map { Self.escape("cd \(Self.shellQuote($0)) && clear") } ?? ""
+        let source = """
+        tell application id "com.apple.Terminal"
+            do script "\(command)"
+            activate
+        end tell
+        """
+        // Allowed even when Terminal isn't running: here launching it is the point.
+        queue.async { _ = self.execute(NSAppleScript(source: source)) }
+    }
+
     /// Asks Terminal to close the window; Terminal itself warns if something is still running.
     func close(windowID: Int) {
         run("""
@@ -211,6 +225,11 @@ final class TerminalBridge: @unchecked Sendable {
             }
         }
         return .success(descriptor.stringValue ?? "")
+    }
+
+    /// Quotes a path for the shell, e.g. /Users/me/it's here -> '/Users/me/it'\''s here'.
+    private static func shellQuote(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func escape(_ text: String) -> String {

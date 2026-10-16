@@ -150,6 +150,23 @@ final class SessionStore: ObservableObject {
         refreshSoon()
     }
 
+    func newWindow() {
+        bridge.newWindow()
+        refreshSoon()
+    }
+
+    func newWindowInFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Open Terminal Here"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        bridge.newWindow(in: url.path)
+        refreshSoon()
+    }
+
     func close(_ window: ManagedWindow) {
         bridge.close(windowID: window.id)
         refreshSoon()

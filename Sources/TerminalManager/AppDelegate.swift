@@ -87,6 +87,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        add(to: menu, "New Terminal Window", #selector(newWindow))
+        add(to: menu, "New Terminal Window in Folder…", #selector(newWindowInFolder))
         add(to: menu, "Go to Next Terminal That Needs You", #selector(nextAttention))
         add(to: menu, "Hide All Terminals", #selector(hideAll))
         add(to: menu, bar.userHidden ? "Show Top Bar" : "Hide Top Bar", #selector(toggleBar))
@@ -136,6 +138,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func nextAttention() { store.showNextNeedingAttention() }
     @objc private func hideAll() { store.hideAll() }
+    @objc private func newWindow() { store.newWindow() }
+    @objc private func newWindowInFolder() { store.newWindowInFolder() }
     @objc private func copyDiagnostics() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(store.diagnostics, forType: .string)

@@ -22,20 +22,22 @@ struct BarLayout {
     static let maxPillWidth: CGFloat = 176
     static let minPillWidth: CGFloat = 92
     static let noticeWidth: CGFloat = 250
+    static let addButtonWidth: CGFloat = 34
 
     let count: Int
     let pillWidth: CGFloat
 
     init(count: Int, availableWidth: CGFloat) {
         self.count = count
-        let room = availableWidth - Self.padding * 2 - Self.spacing * CGFloat(max(count - 1, 0))
+        let room = availableWidth - Self.padding * 2 - Self.addButtonWidth - Self.spacing * CGFloat(count)
         let fit = count > 0 ? room / CGFloat(count) : Self.maxPillWidth
         pillWidth = floor(min(Self.maxPillWidth, max(Self.minPillWidth, fit)))
     }
 
     var size: CGSize {
+        // Pills, then the + button (only shown while at least one window is open).
         let content = count > 0
-            ? CGFloat(count) * pillWidth + CGFloat(count - 1) * Self.spacing
+            ? CGFloat(count) * (pillWidth + Self.spacing) + Self.addButtonWidth
             : Self.noticeWidth
         return CGSize(width: Self.padding * 2 + content, height: Self.padding * 2 + Self.pillHeight)
     }
@@ -171,6 +173,10 @@ struct BarView: View {
                         removal: .opacity.animation(.easeOut(duration: 0.12))
                     ))
             }
+            if !store.windows.isEmpty {
+                AddButton(store: store)
+                    .frame(width: BarLayout.addButtonWidth, height: BarLayout.pillHeight)
+            }
         }
         .padding(BarLayout.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -207,6 +213,29 @@ struct PressableStyle: ButtonStyle {
                 .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
                 .animation(.easeOut(duration: 0.12), value: hovering)
                 .onHover { hovering = $0 }
+        }
+    }
+}
+
+/// Opens a new window in Terminal. Right-click to pick a folder first.
+struct AddButton: View {
+    let store: SessionStore
+
+    var body: some View {
+        Button {
+            store.newWindow()
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .help("New Terminal window")
+        .contextMenu {
+            Button("New Terminal Window") { store.newWindow() }
+            Button("New Terminal Window in Folder…") { store.newWindowInFolder() }
         }
     }
 }
