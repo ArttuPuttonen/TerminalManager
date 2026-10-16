@@ -13,16 +13,20 @@ screen with one pill per window. When the last window closes, the strip goes awa
 
 How it works:
 
-1. Click a pill to bring that Terminal window to the front. Click it again to minimize it to the Dock.
+1. Click a pill to bring that Terminal window to the front. Click it again to hide it. Hidden windows live in the bar, not in the Dock, so your desktop and Dock stay clean.
 2. When a terminal needs you, its pill turns orange, you get a macOS notification and a sound, and the menu bar icon shows how many are waiting. Click the notification to jump straight to that window.
-3. Answer it. Once the program is working on its own again (and you've stopped typing for a couple of seconds), the window **minimizes itself**.
-4. Right-click a pill to **rename** it (the name becomes the tab's title in Terminal too), mark it **Keep Open** so it never auto-minimizes, or close the window.
+3. Answer it. Once the program is working on its own again (and you've stopped typing for a couple of seconds), the window **hides itself** back into the bar.
+4. Right-click a pill to **rename** it (the name becomes the tab's title in Terminal too), mark it **Keep Open** so it never auto-hides, or close the window.
+
+If you minimize a Terminal window the usual way (yellow button or ⌘M), Terminal Manager notices
+within a second and moves it from the Dock into the bar (you may see a quick flash). You can turn this off
+in the menu. When Terminal Manager quits, hidden windows go back to the Dock so they are never lost.
 
 Pills are named after the folder the terminal is in, unless you rename them. A window with
 several tabs shows the most urgent tab.
 
 The menu bar icon has the list of windows, "Go to Next Terminal That Needs You", and settings:
-auto-minimize, notifications, sounds, Open at Login, and how many seconds of silence count as "needs you".
+auto-hide, minimized windows to the bar, notifications, sounds, Open at Login, and how many seconds of silence count as "needs you".
 
 ## How "needs you" is detected
 
@@ -54,7 +58,7 @@ open "/Applications/Terminal Manager.app"
 The first time it runs:
 
 - It turns on **Open at Login**, so it's always ready in the background (you can switch this off in its menu).
-- macOS asks whether Terminal Manager may **control Terminal**. Click OK. If you clicked Don't Allow, use the menu's "Allow Access to Terminal…" (System Settings → Privacy & Security → Automation).
+- macOS asks whether Terminal Manager may **control Terminal** (needed to list, show and hide its windows). Click OK. If you clicked Don't Allow, use the menu's "Allow Access to Terminal…" (System Settings → Privacy & Security → Automation).
 - macOS asks to allow **notifications**.
 
 Nothing appears until you open a Terminal window. A small terminal icon stays in the menu bar for settings and Quit.

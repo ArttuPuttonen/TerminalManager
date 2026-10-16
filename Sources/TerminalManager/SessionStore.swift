@@ -76,11 +76,16 @@ final class SessionStore: ObservableObject {
         for snapshot in snapshots where !updated.contains(where: { $0.id == snapshot.id }) {
             let window = ManagedWindow(id: snapshot.id)
             window.onStateChange = { [weak self] window, old, new in self?.stateChanged(window, from: old, to: new) }
-            window.onAutoHide = { [weak self] window in self?.minimize(window) }
+            window.onAutoHide = { [weak self] window in self?.hide(window) }
             updated.append(window)
         }
         for window in updated {
-            if let snapshot = byID[window.id] { window.apply(snapshot) }
+            guard let snapshot = byID[window.id] else { continue }
+            window.apply(snapshot)
+            // Minimized with the yellow button (or ⌘M)? Keep it in the bar, not the Dock.
+            if snapshot.miniaturized, Settings.shared.keepMinimizedInBar {
+                bridge.moveFromDockToBar(windowID: window.id)
+            }
         }
         let removed = windows.filter { byID[$0.id] == nil }
         removed.forEach { Notifier.shared.clear(for: $0) }
@@ -95,20 +100,20 @@ final class SessionStore: ObservableObject {
     func show(_ window: ManagedWindow) {
         guard let tab = window.urgentTab ?? window.tabs.first else { return }
         bridge.show(windowID: window.id, tab: tab.index)
-        window.assume(miniaturized: false, frontmost: true)
+        window.assume(hidden: false, frontmost: true)
         Notifier.shared.clear(for: window)
         refreshSoon()
     }
 
-    func minimize(_ window: ManagedWindow) {
-        bridge.minimize(windowID: window.id)
-        window.assume(miniaturized: true, frontmost: false)
+    func hide(_ window: ManagedWindow) {
+        bridge.hide(windowID: window.id)
+        window.assume(hidden: true, frontmost: false)
         refreshSoon()
     }
 
     func toggle(_ window: ManagedWindow) {
         if window.isViewed {
-            minimize(window)
+            hide(window)
         } else {
             show(window)
         }
@@ -119,8 +124,12 @@ final class SessionStore: ObservableObject {
         if let window = ordered.first { show(window) }
     }
 
-    func minimizeAll() {
-        windows.filter { !$0.isMiniaturized }.forEach { minimize($0) }
+    func hideAll() {
+        windows.filter { !$0.isHidden }.forEach { hide($0) }
+    }
+
+    func returnHiddenWindowsToDock() {
+        bridge.returnHiddenWindowsToDock()
     }
 
     func rename(_ window: ManagedWindow) {

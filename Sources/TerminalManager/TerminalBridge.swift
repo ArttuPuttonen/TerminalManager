@@ -11,6 +11,8 @@ struct TabSnapshot {
 struct WindowSnapshot {
     let id: Int
     let miniaturized: Bool
+    /// False while Terminal Manager keeps the window hidden in the bar.
+    let visible: Bool
     let frontmost: Bool
     let title: String
     let tabs: [TabSnapshot]
@@ -53,6 +55,7 @@ final class TerminalBridge: @unchecked Sendable {
                         set tabList to tabs of w
                         if (count of tabList) > 0 then
                             set isMini to false
+                            set isVisible to true
                             set isFront to false
                             set wName to ""
                             try
@@ -62,9 +65,12 @@ final class TerminalBridge: @unchecked Sendable {
                                 set isFront to frontmost of w
                             end try
                             try
+                                set isVisible to visible of w
+                            end try
+                            try
                                 set wName to name of w
                             end try
-                            set out to out & "W" & us & (id of w) & us & isMini & us & isFront & us & wName & rs
+                            set out to out & "W" & us & (id of w) & us & isMini & us & isFront & us & isVisible & us & wName & rs
                             set i to 0
                             repeat with t in tabList
                                 set i to i + 1
@@ -108,12 +114,13 @@ final class TerminalBridge: @unchecked Sendable {
 
     // MARK: Commands
 
-    /// Un-minimizes the window, selects the tab and brings it to the front.
+    /// Unhides (or un-minimizes) the window, selects the tab and brings it to the front.
     func show(windowID: Int, tab: Int) {
         run("""
         tell application id "com.apple.Terminal"
             set w to window id \(windowID)
             set miniaturized of w to false
+            set visible of w to true
             try
                 set selected tab of w to tab \(tab) of w
             end try
@@ -123,10 +130,45 @@ final class TerminalBridge: @unchecked Sendable {
         """)
     }
 
-    func minimize(windowID: Int) {
+    /// Hides the window without sending it to the Dock; its pill in the bar is the way back.
+    func hide(windowID: Int) {
         run("""
-        tell application id "com.apple.Terminal" to set miniaturized of window id \(windowID) to true
+        tell application id "com.apple.Terminal" to set visible of window id \(windowID) to false
         """)
+    }
+
+    /// Takes a window you minimized with the yellow button out of the Dock and hides it instead.
+    func moveFromDockToBar(windowID: Int) {
+        run("""
+        tell application id "com.apple.Terminal"
+            set w to window id \(windowID)
+            set visible of w to false
+            set miniaturized of w to false
+            set visible of w to false
+        end tell
+        """)
+    }
+
+    /// When Terminal Manager quits, hidden windows go back to the Dock so they're never lost.
+    /// Runs synchronously because the app is about to exit.
+    func returnHiddenWindowsToDock() {
+        guard Self.terminalApp != nil else { return }
+        queue.sync {
+            _ = self.execute(NSAppleScript(source: """
+            with timeout of 3 seconds
+                tell application id "com.apple.Terminal"
+                    repeat with w in windows
+                        try
+                            if (count of tabs of w) > 0 and not (visible of w) then
+                                set visible of w to true
+                                set miniaturized of w to true
+                            end if
+                        end try
+                    end repeat
+                end tell
+            end timeout
+            """))
+        }
     }
 
     /// Renames by setting the tab's custom title, so the name shows in Terminal too and sticks.
@@ -177,12 +219,13 @@ final class TerminalBridge: @unchecked Sendable {
 
     static func parse(_ output: String) -> [WindowSnapshot] {
         var windows: [WindowSnapshot] = []
-        var current: (id: Int, mini: Bool, front: Bool, title: String)?
+        var current: (id: Int, mini: Bool, front: Bool, visible: Bool, title: String)?
         var tabs: [TabSnapshot] = []
 
         func flush() {
             if let current, !tabs.isEmpty {
                 windows.append(WindowSnapshot(id: current.id, miniaturized: current.mini, frontmost: current.front,
+                                              visible: current.visible,
                                               title: current.title, tabs: tabs))
             }
             current = nil
@@ -192,10 +235,11 @@ final class TerminalBridge: @unchecked Sendable {
         for record in output.split(separator: "\u{1E}", omittingEmptySubsequences: true) {
             let fields = record.split(separator: "\u{1F}", omittingEmptySubsequences: false).map(String.init)
             switch fields.first {
-            case "W" where fields.count >= 5:
+            case "W" where fields.count >= 6:
                 flush()
                 guard let id = Int(fields[1]) else { continue }
-                current = (id, fields[2] == "true", fields[3] == "true", fields[4...].joined(separator: " "))
+                current = (id, fields[2] == "true", fields[3] == "true", fields[4] != "false",
+                           fields[5...].joined(separator: " "))
             case "T" where fields.count >= 4 && current != nil:
                 guard let index = Int(fields[1]) else { continue }
                 let title = fields.count >= 5 ? fields[4...].joined(separator: " ") : ""

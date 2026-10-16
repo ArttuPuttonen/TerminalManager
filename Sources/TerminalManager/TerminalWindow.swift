@@ -153,10 +153,11 @@ final class ManagedWindow: ObservableObject, Identifiable {
     @Published private(set) var state: ActivityState = .idle
     @Published private(set) var detail = ""
     @Published private(set) var directory = ""
-    @Published private(set) var isMiniaturized = false
+    /// Hidden in the bar (or minimized to the Dock): not on screen.
+    @Published private(set) var isHidden = false
     @Published private(set) var isFrontmostWindow = false
     @Published private(set) var tabCount = 1
-    /// Never auto-minimize this window.
+    /// Never auto-hide this window.
     @Published var keepOpen = false
 
     /// Called when the state changes: (window, old state, new state).
@@ -167,7 +168,7 @@ final class ManagedWindow: ObservableObject, Identifiable {
     private(set) var tabs: [TabSnapshot] = []
     private var monitors: [String: TabMonitor] = [:]
     /// Set when you look at the window while it waits for you; once it goes back
-    /// to work on its own, it minimizes again.
+    /// to work on its own, it hides again.
     private var autoHideArmed = false
     private var wasViewed = false
 
@@ -176,7 +177,7 @@ final class ManagedWindow: ObservableObject, Identifiable {
     }
 
     /// You are looking at it: Terminal is the active app and this is its front window.
-    var isViewed: Bool { TerminalBridge.isTerminalFrontmost && isFrontmostWindow && !isMiniaturized }
+    var isViewed: Bool { TerminalBridge.isTerminalFrontmost && isFrontmostWindow && !isHidden }
 
     /// The tab that speaks for the window: most urgent, preferring the selected one.
     var urgentTab: TabSnapshot? {
@@ -188,7 +189,8 @@ final class ManagedWindow: ObservableObject, Identifiable {
 
     func apply(_ snapshot: WindowSnapshot) {
         tabs = snapshot.tabs
-        if isMiniaturized != snapshot.miniaturized { isMiniaturized = snapshot.miniaturized }
+        let hidden = snapshot.miniaturized || !snapshot.visible
+        if isHidden != hidden { isHidden = hidden }
         if isFrontmostWindow != snapshot.frontmost { isFrontmostWindow = snapshot.frontmost }
         if tabCount != snapshot.tabs.count { tabCount = snapshot.tabs.count }
         let ttys = Set(snapshot.tabs.map(\.tty))
@@ -196,11 +198,11 @@ final class ManagedWindow: ObservableObject, Identifiable {
         for tty in ttys where monitors[tty] == nil { monitors[tty] = TabMonitor(tty: tty) }
     }
 
-    /// Locally reflect a show/minimize right away instead of waiting for the next snapshot.
-    func assume(miniaturized: Bool, frontmost: Bool) {
-        isMiniaturized = miniaturized
+    /// Locally reflect a show/hide right away instead of waiting for the next snapshot.
+    func assume(hidden: Bool, frontmost: Bool) {
+        isHidden = hidden
         isFrontmostWindow = frontmost
-        if !miniaturized { autoHideArmed = state != .working }
+        if !hidden { autoHideArmed = state != .working }
     }
 
     func tick() {
@@ -231,7 +233,7 @@ final class ManagedWindow: ObservableObject, Identifiable {
         if tabs.count > 1 { newDetail = "\(tabs.count) tabs · " + newDetail }
         if newDetail != detail { detail = newDetail }
 
-        // Looking at it while it waits for you (or sits idle) arms auto-minimize.
+        // Looking at it while it waits for you (or sits idle) arms auto-hide.
         if viewed, !wasViewed, newState != .working { autoHideArmed = true }
         if viewed, newState == .needsInput || newState == .idle { autoHideArmed = true }
         wasViewed = viewed
@@ -242,7 +244,7 @@ final class ManagedWindow: ObservableObject, Identifiable {
             onStateChange?(self, old, newState)
         }
 
-        // Auto-minimize: you answered, it's working again, and you stopped typing.
+        // Auto-hide: you answered, it's working again, and you stopped typing.
         let now = Date()
         if autoHideArmed, newState == .working, viewed, !keepOpen, Settings.shared.autoHide,
            let since = monitor?.workingSince, now.timeIntervalSince(since) > 2.5,

@@ -35,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        store.returnHiddenWindowsToDock()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     // MARK: Refresh
@@ -84,12 +88,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         add(to: menu, "Go to Next Terminal That Needs You", #selector(nextAttention))
-        add(to: menu, "Minimize All Terminals", #selector(minimizeAll))
+        add(to: menu, "Hide All Terminals", #selector(hideAll))
         add(to: menu, bar.userHidden ? "Show Top Bar" : "Hide Top Bar", #selector(toggleBar))
 
         menu.addItem(.separator())
         let settings = Settings.shared
-        add(to: menu, "Auto-Minimize When Working Again", #selector(toggleAutoHide), on: settings.autoHide)
+        add(to: menu, "Auto-Hide When Working Again", #selector(toggleAutoHide), on: settings.autoHide)
+        add(to: menu, "Minimized Windows Go to the Bar, Not the Dock", #selector(toggleKeepInBar), on: settings.keepMinimizedInBar)
         add(to: menu, "Notifications", #selector(toggleNotifications), on: settings.notifications)
         add(to: menu, "Sounds", #selector(toggleSound), on: settings.sound)
         add(to: menu, "Open at Login", #selector(toggleLogin), on: Permissions.opensAtLogin)
@@ -129,7 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let window = sender.representedObject as? ManagedWindow { store.show(window) }
     }
     @objc private func nextAttention() { store.showNextNeedingAttention() }
-    @objc private func minimizeAll() { store.minimizeAll() }
+    @objc private func hideAll() { store.hideAll() }
+    @objc private func toggleKeepInBar() { Settings.shared.keepMinimizedInBar.toggle() }
     @objc private func toggleBar() { bar.userHidden.toggle() }
     @objc private func openAutomationSettings() { Permissions.openAutomationSettings() }
     @objc private func toggleAutoHide() { Settings.shared.autoHide.toggle() }

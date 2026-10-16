@@ -12,6 +12,7 @@ final class Settings {
             Keys.notifications: true,
             Keys.sound: true,
             Keys.quietSeconds: 4.0,
+            Keys.keepMinimizedInBar: true,
         ])
     }
 
@@ -21,9 +22,10 @@ final class Settings {
         static let sound = "sound"
         static let quietSeconds = "quietSeconds"
         static let didSetUpLoginItem = "didSetUpLoginItem"
+        static let keepMinimizedInBar = "keepMinimizedInBar"
     }
 
-    /// Minimize a Terminal window automatically once it goes back to working on its own.
+    /// Hide a Terminal window automatically once it goes back to working on its own.
     var autoHide: Bool {
         get { defaults.bool(forKey: Keys.autoHide) }
         set { defaults.set(newValue, forKey: Keys.autoHide) }
@@ -43,6 +45,12 @@ final class Settings {
     var quietSeconds: Double {
         get { defaults.double(forKey: Keys.quietSeconds) }
         set { defaults.set(newValue, forKey: Keys.quietSeconds) }
+    }
+
+    /// Windows you minimize with the yellow button go to the bar instead of the Dock.
+    var keepMinimizedInBar: Bool {
+        get { defaults.bool(forKey: Keys.keepMinimizedInBar) }
+        set { defaults.set(newValue, forKey: Keys.keepMinimizedInBar) }
     }
 
     /// Whether we already turned on "Open at Login" once (so we never override your choice).

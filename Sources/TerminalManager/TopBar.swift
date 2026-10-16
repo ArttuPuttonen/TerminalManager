@@ -287,9 +287,9 @@ struct WindowPill: View {
         .buttonStyle(PressableStyle())
         .help("\(window.name) — \(state.label)\n\((window.directory as NSString).abbreviatingWithTildeInPath)")
         .contextMenu {
-            Button(window.isViewed ? "Minimize" : "Show") { store.toggle(window) }
+            Button(window.isViewed ? "Hide" : "Show") { store.toggle(window) }
             Button("Rename…") { store.rename(window) }
-            Toggle("Keep Open (No Auto-Minimize)", isOn: $window.keepOpen)
+            Toggle("Keep Open (No Auto-Hide)", isOn: $window.keepOpen)
             Divider()
             Button("Close Window") { store.close(window) }
         }
