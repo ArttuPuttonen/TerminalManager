@@ -15,7 +15,7 @@ enum ActivityState: String {
     /// The shell exited.
     case exited
 
-    var color: Color {
+    var color: SwiftUI.Color {
         switch self {
         case .idle: return .gray
         case .working: return .green
