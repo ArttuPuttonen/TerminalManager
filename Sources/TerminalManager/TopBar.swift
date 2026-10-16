@@ -42,6 +42,18 @@ struct BarLayout {
         return CGSize(width: Self.padding * 2 + content, height: Self.padding * 2 + Self.pillHeight)
     }
 
+    // Collapsed: one status dot per window in a small capsule under the notch.
+    static let dotSize: CGFloat = 18
+    static let dotSpacing: CGFloat = 3
+    static let collapsedPadding = EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
+    static var collapsedHeight: CGFloat { dotSize + collapsedPadding.top + collapsedPadding.bottom }
+
+    var collapsedSize: CGSize {
+        let dots = CGFloat(count) * Self.dotSize + CGFloat(max(count - 1, 0)) * Self.dotSpacing
+        return CGSize(width: dots + Self.collapsedPadding.leading + Self.collapsedPadding.trailing,
+                      height: Self.collapsedHeight)
+    }
+
     /// Narrow pills drop the second line rather than squeezing it into "…".
     var showsDetail: Bool { pillWidth >= 120 }
 
@@ -56,6 +68,7 @@ struct BarLayout {
 @MainActor
 final class TopBarPanel: NSPanel {
     private let store: SessionStore
+    let barState = BarState()
     private var targetFrame: NSRect = .zero
     private var observers: Set<AnyCancellable> = []
     /// You can hide the bar from the menu bar menu; then it stays hidden.
@@ -80,8 +93,23 @@ final class TopBarPanel: NSPanel {
         hasShadow = true
         becomesKeyOnlyIfNeeded = true
         animationBehavior = .none
-        contentView = NSHostingView(rootView: BarView(store: store))
+        let hosting = NSHostingView(rootView: BarView(store: store, barState: barState))
+        let container = HoverTrackingView { [weak self] inside in self?.barState.hover(inside) }
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        contentView = container
         relayout(animated: false)
+
+        barState.$expanded
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.relayout() } }
+            .store(in: &observers)
 
         // React right away when windows come and go (not on the next poll).
         // @Published fires before the change lands, so hop to the next main-queue turn.
@@ -101,13 +129,17 @@ final class TopBarPanel: NSPanel {
 
     private var hasContent: Bool { !store.windows.isEmpty || store.accessDenied }
 
+    /// The access notice has nothing to collapse into, so it always shows in full.
+    private var showsExpanded: Bool { barState.expanded || store.windows.isEmpty }
+
     /// Resize to fit the pills and stay centered just below the menu bar.
     /// Called on every poll, so it only does work when the target changes.
     func relayout(animated: Bool = true) {
         guard let screen = NSScreen.screens.first else { return }
-        let size = BarLayout.current(count: store.windows.count).size
+        let layout = BarLayout.current(count: store.windows.count)
+        let size = showsExpanded ? layout.size : layout.collapsedSize
         let visible = screen.visibleFrame
-        let frame = NSRect(x: visible.midX - size.width / 2, y: visible.maxY - size.height - 6,
+        let frame = NSRect(x: visible.midX - size.width / 2, y: visible.maxY - size.height - 4,
                            width: size.width, height: size.height).integral
         guard frame != targetFrame else { return }
         targetFrame = frame
@@ -157,12 +189,122 @@ final class TopBarPanel: NSPanel {
 
 // MARK: - Views
 
+/// Whether the bar is collapsed to dots or expanded to pills. Hovering expands it
+/// after a short dwell (so passing by on the way to a browser tab doesn't), leaving
+/// collapses it after a moment, and it stays open while one of its menus is showing.
+@MainActor
+final class BarState: ObservableObject {
+    @Published private(set) var expanded = false
+    private var pending: DispatchWorkItem?
+    private var hovering = false
+    private var menuOpen = false
+    private var observers: [NSObjectProtocol] = []
+
+    init() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuOpen = true }
+        })
+        observers.append(center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.menuOpen = false
+                self?.schedule()
+            }
+        })
+    }
+
+    func hover(_ inside: Bool) {
+        hovering = inside
+        schedule()
+    }
+
+    /// Expand right away (e.g. on click).
+    func expand() {
+        pending?.cancel()
+        expanded = true
+    }
+
+    private func schedule() {
+        pending?.cancel()
+        let target = hovering || menuOpen
+        guard target != expanded else { return }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let target = self.hovering || self.menuOpen
+                if target != self.expanded { self.expanded = target }
+            }
+        }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (target ? 0.15 : 0.5), execute: work)
+    }
+}
+
+/// Reports the mouse entering and leaving, even while another app is active
+/// (SwiftUI's hover tracking only works in the active app).
+final class HoverTrackingView: NSView {
+    private let onChange: (Bool) -> Void
+
+    init(onChange: @escaping (Bool) -> Void) {
+        self.onChange = onChange
+        super.init(frame: .zero)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func mouseEntered(with event: NSEvent) { onChange(true) }
+    override func mouseExited(with event: NSEvent) { onChange(false) }
+}
+
 struct BarView: View {
     @ObservedObject var store: SessionStore
+    @ObservedObject var barState: BarState
 
     var body: some View {
+        let expanded = barState.expanded || store.windows.isEmpty
+        let radius = expanded ? BarLayout.outerRadius : BarLayout.collapsedHeight / 2
+        ZStack {
+            if expanded {
+                pills.transition(.opacity.animation(.easeOut(duration: 0.15)))
+            } else {
+                dots.transition(.opacity.animation(.easeOut(duration: 0.1)))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .overlay(
+            // A light edge where the material catches the light, instead of a solid border.
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.05)], startPoint: .top, endPoint: .bottom),
+                    lineWidth: 0.5
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+    }
+
+    /// Collapsed: just the status dots. A click expands right away.
+    private var dots: some View {
+        Button {
+            barState.expand()
+        } label: {
+            HStack(spacing: BarLayout.dotSpacing) {
+                ForEach(store.windows) { window in
+                    WindowDot(window: window)
+                }
+            }
+            .padding(BarLayout.collapsedPadding)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(store.windows.map { "\($0.name) — \($0.state.label)" }.joined(separator: "\n"))
+    }
+
+    private var pills: some View {
         let layout = BarLayout.current(count: store.windows.count)
-        HStack(spacing: BarLayout.spacing) {
+        return HStack(spacing: BarLayout.spacing) {
             if store.windows.isEmpty && store.accessDenied {
                 AccessNotice()
             }
@@ -179,17 +321,16 @@ struct BarView: View {
             }
         }
         .padding(BarLayout.padding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: BarLayout.outerRadius, style: .continuous))
-        .overlay(
-            // A light edge where the material catches the light, instead of a solid border.
-            RoundedRectangle(cornerRadius: BarLayout.outerRadius, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.05)], startPoint: .top, endPoint: .bottom),
-                    lineWidth: 0.5
-                )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: BarLayout.outerRadius, style: .continuous))
+    }
+}
+
+/// One window's dot in the collapsed bar.
+struct WindowDot: View {
+    @ObservedObject var window: ManagedWindow
+
+    var body: some View {
+        StatusDot(state: window.state)
+            .frame(width: BarLayout.dotSize, height: BarLayout.dotSize)
     }
 }
 

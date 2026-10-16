@@ -2,7 +2,11 @@
 
 A small native macOS companion for the built-in **Terminal** app. Keep using Terminal as you
 always have: as soon as you open your first Terminal window, a strip appears at the top of the
-screen with one pill per window. When the last window closes, the strip goes away.
+screen. When the last window closes, the strip goes away.
+
+To stay out of the way of your browser's tabs, the strip normally collapses to a small row of
+colored dots under the notch, one per window. Hover over it (or click it) to expand it into
+full pills with names; move away and it shrinks back.
 
 | Color | Meaning |
 |-------|---------|

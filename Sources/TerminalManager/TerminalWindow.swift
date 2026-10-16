@@ -114,7 +114,8 @@ final class TabMonitor {
                 activeSince = nil
             }
             let job = procs.filter { $0.groupID == foreground }
-            processName = job.first { $0.pid == foreground }?.name ?? job.first?.name ?? ""
+            let leader = job.first { $0.pid == foreground } ?? job.first
+            processName = leader.map { ProcessInspector.displayName(pid: $0.pid, processName: $0.name) } ?? ""
 
             // CPU usage of the whole foreground job catches quiet compiles and installs.
             let cpu = job.reduce(0) { $0 + ProcessInspector.cpuSeconds(pid: $1.pid) }
@@ -239,6 +240,13 @@ final class ManagedWindow: ObservableObject, Identifiable {
         }
     }
 
+    /// Programs like Claude Code put a spinner or status glyph in front of the tab title
+    /// ("✳ Terminal manager"); the dot already shows status, so drop it.
+    static func cleanTitle(_ title: String) -> String {
+        let trimmed = title.drop { !$0.isLetter && !$0.isNumber }
+        return String(trimmed).trimmingCharacters(in: .whitespaces)
+    }
+
     /// What each tab looks like to the detector, for "Copy Diagnostics".
     var diagnostics: String {
         "Window \(id) \"\(name)\" state=\(state.rawValue) viewed=\(isViewed) hidden=\(isHidden)\n"
@@ -277,7 +285,8 @@ final class ManagedWindow: ObservableObject, Identifiable {
         let selected = tabs.first(where: \.selected) ?? tabs.first
         let selectedMonitor = selected.flatMap { monitors[$0.tty] }
         let folder = selectedMonitor.map { ($0.directory as NSString).lastPathComponent } ?? ""
-        let newName = [selected?.customTitle ?? "", folder, "Terminal"].first { !$0.isEmpty } ?? "Terminal"
+        let title = Self.cleanTitle(selected?.customTitle ?? "")
+        let newName = [title, folder, "Terminal"].first { !$0.isEmpty } ?? "Terminal"
         if newName != name { name = newName }
         if let dir = selectedMonitor?.directory, dir != directory { directory = dir }
 

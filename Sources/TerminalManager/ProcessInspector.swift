@@ -11,6 +11,27 @@ enum ProcessInspector {
         return String(cString: buffer)
     }
 
+    static func executablePath(of pid: pid_t) -> String? {
+        guard pid > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: 4096) // PROC_PIDPATHINFO_MAXSIZE
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        return String(cString: buffer)
+    }
+
+    /// A readable program name. Some tools name their binary after their version
+    /// (Claude Code runs as ".../claude/versions/2.1.301"), so fall back to the path.
+    static func displayName(pid: pid_t, processName: String) -> String {
+        let looksLikeVersion = !processName.isEmpty && processName.allSatisfy { $0.isNumber || $0 == "." }
+        guard looksLikeVersion, let path = executablePath(of: pid) else { return processName }
+        let parts = path.split(separator: "/").map(String.init)
+        if let named = parts.first(where: { $0.lowercased() == "claude" || $0.lowercased() == ".claude" }) {
+            return named.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        }
+        // e.g. /opt/tool/versions/1.2.3 -> "tool"
+        let meaningful = parts.dropLast().reversed().first { !["versions", "bin", "libexec", "local", "share"].contains($0.lowercased()) }
+        return meaningful ?? processName
+    }
+
     /// Current working directory of a process.
     static func workingDirectory(of pid: pid_t) -> String? {
         guard pid > 0 else { return nil }
