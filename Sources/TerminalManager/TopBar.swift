@@ -9,6 +9,20 @@ enum Design {
     static let swiftUIEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.2)
 
     static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    /// The bar's dots → pills morph: a spring like the Dynamic Island's, with a hint of bounce.
+    /// Springs start moving at once and settle naturally, and stay smooth if interrupted.
+    static var morph: Animation {
+        reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.8)
+    }
+    /// Longer than the spring takes to settle visibly; the panel shrinks only after this.
+    static let morphSettle: TimeInterval = 0.5
+}
+
+/// Blur as a transition, so content materializes instead of just fading.
+struct BlurModifier: ViewModifier {
+    let radius: CGFloat
+    func body(content: Content) -> some View { content.blur(radius: radius) }
 }
 
 /// Geometry of the bar, computed up front so the panel size always matches what SwiftUI draws.
@@ -90,7 +104,7 @@ final class TopBarPanel: NSPanel {
         hidesOnDeactivate = false
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false // SwiftUI draws the shadow so it follows the morphing shape
         becomesKeyOnlyIfNeeded = true
         animationBehavior = .none
         let hosting = NSHostingView(rootView: BarView(store: store, barState: barState))
@@ -106,14 +120,12 @@ final class TopBarPanel: NSPanel {
         contentView = container
         relayout(animated: false)
 
+        // Grow the panel in the same turn, before the capsule starts growing inside it.
+        barState.willExpand = { [weak self] in self?.relayout(expanding: true) }
         barState.$expanded
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                MainActor.assumeIsolated {
-                    // Opening is instant (you're reaching for it); closing gets a short, soft shrink.
-                    guard let self else { return }
-                    self.relayout(animated: !self.barState.expanded)
-                }
+                MainActor.assumeIsolated { self?.relayout() }
             }
             .store(in: &observers)
 
@@ -140,23 +152,42 @@ final class TopBarPanel: NSPanel {
 
     /// Resize to fit the pills and stay centered just below the menu bar.
     /// Called on every poll, so it only does work when the target changes.
-    func relayout(animated: Bool = true) {
+    /// Room around the capsule for its shadow.
+    static let shadowMargin = NSEdgeInsets(top: 0, left: 16, bottom: 20, right: 16)
+    private var pendingShrink: DispatchWorkItem?
+
+    /// Sizes the (invisible) panel around the capsule. SwiftUI animates the capsule itself;
+    /// the panel never animates: it grows at once before the capsule grows, and shrinks only
+    /// after the capsule has finished shrinking, so its edges are never seen.
+    func relayout(animated: Bool = true, expanding: Bool = false) {
         guard let screen = NSScreen.screens.first else { return }
         let layout = BarLayout.current(count: store.windows.count)
-        let size = showsExpanded ? layout.size : layout.collapsedSize
+        let capsule = showsExpanded || expanding ? layout.size : layout.collapsedSize
+        let margin = Self.shadowMargin
+        let size = CGSize(width: capsule.width + margin.left + margin.right,
+                          height: capsule.height + margin.top + margin.bottom)
         let visible = screen.visibleFrame
-        let frame = NSRect(x: visible.midX - size.width / 2, y: visible.maxY - size.height - 4,
+        let frame = NSRect(x: visible.midX - size.width / 2, y: visible.maxY - 4 - size.height,
                            width: size.width, height: size.height).integral
         guard frame != targetFrame else { return }
-        targetFrame = frame
-        if animated, isVisible, alphaValue > 0, !Design.reduceMotion {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.2
-                context.timingFunction = Design.easeOut
-                animator().setFrame(frame, display: true)
-            }
-        } else {
+
+        let grows = frame.width >= targetFrame.width && frame.height >= targetFrame.height
+        if grows || !animated || !isVisible {
+            pendingShrink?.cancel()
+            pendingShrink = nil
+            targetFrame = frame
             setFrame(frame, display: true)
+        } else if pendingShrink == nil {
+            let work = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.pendingShrink = nil
+                    self.targetFrame = .zero // force re-evaluation with the latest layout
+                    self.relayout(animated: false)
+                }
+            }
+            pendingShrink = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Design.morphSettle, execute: work)
         }
     }
 
@@ -201,6 +232,8 @@ final class TopBarPanel: NSPanel {
 @MainActor
 final class BarState: ObservableObject {
     @Published private(set) var expanded = false
+    /// Called right before expanding, so the panel can make room first.
+    var willExpand: (() -> Void)?
     private var pending: DispatchWorkItem?
     private var hovering = false
     private var menuOpen = false
@@ -227,7 +260,12 @@ final class BarState: ObservableObject {
     /// Expand right away (e.g. on click).
     func expand() {
         pending?.cancel()
-        expanded = true
+        set(true)
+    }
+
+    private func set(_ value: Bool) {
+        if value { willExpand?() }
+        withAnimation(Design.morph) { expanded = value }
     }
 
     private func schedule() {
@@ -235,15 +273,15 @@ final class BarState: ObservableObject {
         let target = hovering || menuOpen
         guard target != expanded else { return }
         if target {
-            // Expand the moment the mouse arrives.
-            expanded = true
+            // Start expanding the moment the mouse arrives; the spring makes it smooth.
+            set(true)
             return
         }
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let target = self.hovering || self.menuOpen
-                if target != self.expanded { self.expanded = target }
+                if target != self.expanded { self.set(target) }
             }
         }
         pending = work
@@ -275,25 +313,45 @@ struct BarView: View {
 
     var body: some View {
         let expanded = barState.expanded || store.windows.isEmpty
-        let radius = expanded ? BarLayout.outerRadius : BarLayout.collapsedHeight / 2
-        ZStack {
+        let layout = BarLayout.current(count: store.windows.count)
+        let size = expanded ? layout.size : layout.collapsedSize
+        let shape = RoundedRectangle(cornerRadius: expanded ? BarLayout.outerRadius : BarLayout.collapsedHeight / 2,
+                                     style: .continuous)
+        ZStack(alignment: .center) {
             if expanded {
-                pills.transition(.asymmetric(insertion: .identity, removal: .opacity.animation(.easeOut(duration: 0.1))))
+                pills.transition(.asymmetric(
+                    // Pills materialize: fade in, sharpen, and settle from slightly smaller.
+                    insertion: .opacity
+                        .combined(with: .scale(scale: 0.94, anchor: .top))
+                        .combined(with: .modifier(active: BlurModifier(radius: 6), identity: BlurModifier(radius: 0))),
+                    removal: .opacity.animation(.easeOut(duration: 0.12))
+                ))
             } else {
-                dots.transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.12)), removal: .identity))
+                dots.transition(.asymmetric(
+                    insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.08)),
+                    removal: .opacity
+                        .combined(with: .modifier(active: BlurModifier(radius: 4), identity: BlurModifier(radius: 0)))
+                        .animation(.easeOut(duration: 0.12))
+                ))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .frame(width: size.width, height: size.height)
+        .background(.regularMaterial, in: shape)
         .overlay(
             // A light edge where the material catches the light, instead of a solid border.
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.05)], startPoint: .top, endPoint: .bottom),
-                    lineWidth: 0.5
-                )
+            shape.strokeBorder(
+                LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.05)], startPoint: .top, endPoint: .bottom),
+                lineWidth: 0.5
+            )
         )
-        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .clipShape(shape)
+        .shadow(color: .black.opacity(expanded ? 0.28 : 0.18), radius: expanded ? 12 : 6, y: expanded ? 5 : 2)
+        .animation(Design.morph, value: expanded)
+        .animation(Design.morph, value: size)
+        // Pin the capsule to the top of the panel; the rest of the panel is transparent shadow room.
+        .padding(.leading, TopBarPanel.shadowMargin.left)
+        .padding(.trailing, TopBarPanel.shadowMargin.right)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     /// Collapsed: just the status dots. A click expands right away.
