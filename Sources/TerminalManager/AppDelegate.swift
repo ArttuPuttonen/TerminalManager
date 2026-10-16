@@ -13,7 +13,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         buildMainMenu()
 
         bar = TopBarPanel(store: store)
-        store.pillFrame = { [weak self] session in self?.bar.pillFrameOnScreen(for: session) }
         store.onTick = { [weak self] in self?.refresh() }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -23,14 +22,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Notifier.shared.setUp()
         Notifier.shared.onOpen = { [weak self] id in
-            guard let self, let session = self.store.session(withID: id) else { return }
-            self.store.show(session)
+            guard let self, let window = self.store.window(withID: id) else { return }
+            self.store.show(window)
         }
-
-        store.restore()
-        if store.sessions.isEmpty { store.newSession() }
-
-        bar.orderFrontRegardless()
+        Permissions.setUpLoginItemOnce()
         refresh()
 
         NotificationCenter.default.addObserver(
@@ -40,25 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        store.save()
-        store.sessions.forEach { $0.terminate() }
-    }
-
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let busy = store.sessions.filter { $0.state == .working || $0.state == .needsInput }
-        guard !busy.isEmpty else { return .terminateNow }
-        let alert = NSAlert()
-        alert.messageText = "Quit Terminal Manager?"
-        alert.informativeText = "\(busy.count) terminal(s) still have programs running: "
-            + busy.map(\.name).joined(separator: ", ") + ". They will be stopped."
-        alert.addButton(withTitle: "Quit")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
-    }
 
     // MARK: Refresh
 
@@ -86,32 +63,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        if store.sessions.isEmpty {
-            menu.addItem(NSMenuItem(title: "No terminals", action: nil, keyEquivalent: ""))
+        if store.accessDenied {
+            add(to: menu, "Allow Access to Terminal…", #selector(openAutomationSettings))
+            menu.addItem(.separator())
         }
-        for session in store.sessions {
-            let item = NSMenuItem(title: "\(session.name) — \(session.state.label)",
-                                  action: #selector(showSession(_:)), keyEquivalent: "")
+        if store.windows.isEmpty {
+            let empty = NSMenuItem(title: "No Terminal windows open", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        }
+        for window in store.windows {
+            let item = NSMenuItem(title: "\(window.name) — \(window.state.label)",
+                                  action: #selector(showWindow(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = session
-            item.image = Self.dot(color: NSColor(session.state.color))
-            item.toolTip = session.detail
+            item.representedObject = window
+            item.image = Self.dot(color: NSColor(window.state.color))
+            item.toolTip = window.detail
             menu.addItem(item)
         }
 
         menu.addItem(.separator())
         add(to: menu, "Go to Next Terminal That Needs You", #selector(nextAttention))
-        add(to: menu, "New Terminal", #selector(newTerminal))
-        add(to: menu, "New Terminal in Folder…", #selector(newTerminalInFolder))
-        add(to: menu, "Hide All Terminals", #selector(hideAll))
-        add(to: menu, bar.isVisible ? "Hide Top Bar" : "Show Top Bar", #selector(toggleBar))
+        add(to: menu, "Minimize All Terminals", #selector(minimizeAll))
+        add(to: menu, bar.userHidden ? "Show Top Bar" : "Hide Top Bar", #selector(toggleBar))
 
         menu.addItem(.separator())
         let settings = Settings.shared
-        add(to: menu, "Auto-hide When Working Again", #selector(toggleAutoHide), on: settings.autoHide)
+        add(to: menu, "Auto-Minimize When Working Again", #selector(toggleAutoHide), on: settings.autoHide)
         add(to: menu, "Notifications", #selector(toggleNotifications), on: settings.notifications)
         add(to: menu, "Sounds", #selector(toggleSound), on: settings.sound)
-        add(to: menu, "Reopen Terminals at Launch", #selector(toggleRestore), on: settings.restoreSessions)
+        add(to: menu, "Open at Login", #selector(toggleLogin), on: Permissions.opensAtLogin)
 
         let quietItem = NSMenuItem(title: "“Needs You” After Silence Of", action: nil, keyEquivalent: "")
         let quietMenu = NSMenu()
@@ -137,75 +118,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private static func dot(color: NSColor) -> NSImage {
-        let image = NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
+        NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
             color.setFill()
             NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
             return true
         }
-        return image
     }
 
-    @objc private func showSession(_ sender: NSMenuItem) {
-        if let session = sender.representedObject as? TerminalSession { store.show(session) }
+    @objc private func showWindow(_ sender: NSMenuItem) {
+        if let window = sender.representedObject as? ManagedWindow { store.show(window) }
     }
     @objc private func nextAttention() { store.showNextNeedingAttention() }
-    @objc func newTerminal() { store.newSession() }
-    @objc func newTerminalInFolder() { store.newSessionInFolder() }
-    @objc private func hideAll() { store.hideAll() }
-    @objc private func toggleBar() {
-        if bar.isVisible { bar.orderOut(nil) } else { bar.orderFrontRegardless() }
-    }
+    @objc private func minimizeAll() { store.minimizeAll() }
+    @objc private func toggleBar() { bar.userHidden.toggle() }
+    @objc private func openAutomationSettings() { Permissions.openAutomationSettings() }
     @objc private func toggleAutoHide() { Settings.shared.autoHide.toggle() }
     @objc private func toggleNotifications() { Settings.shared.notifications.toggle() }
     @objc private func toggleSound() { Settings.shared.sound.toggle() }
-    @objc private func toggleRestore() { Settings.shared.restoreSessions.toggle() }
+    @objc private func toggleLogin() { Permissions.setOpensAtLogin(!Permissions.opensAtLogin) }
     @objc private func setQuiet(_ sender: NSMenuItem) {
         if let seconds = sender.representedObject as? Double { Settings.shared.quietSeconds = seconds }
     }
 
-    // MARK: Main menu (keyboard shortcuts + copy/paste while a terminal is focused)
-
-    @objc private func closeTerminalWindow() {
-        // Goes through windowShouldClose, which hides (never kills) a terminal. Instant: keyboard action.
-        NSApp.keyWindow?.performClose(nil)
-    }
+    // MARK: Main menu (only so copy/paste work in the Rename dialog)
 
     private func buildMainMenu() {
         let main = NSMenu()
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Terminal Manager", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide Terminal Manager", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit Terminal Manager", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
 
-        let fileItem = NSMenuItem()
-        let fileMenu = NSMenu(title: "Shell")
-        let newItem = fileMenu.addItem(withTitle: "New Terminal", action: #selector(newTerminal), keyEquivalent: "t")
-        newItem.target = self
-        let folderItem = fileMenu.addItem(withTitle: "New Terminal in Folder…", action: #selector(newTerminalInFolder), keyEquivalent: "T")
-        folderItem.target = self
-        let closeItem = fileMenu.addItem(withTitle: "Hide Terminal", action: #selector(closeTerminalWindow), keyEquivalent: "w")
-        closeItem.target = self
-        fileItem.submenu = fileMenu
-        main.addItem(fileItem)
-
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         main.addItem(editItem)
-
-        let windowItem = NSMenuItem()
-        let windowMenu = NSMenu(title: "Window")
-        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowItem.submenu = windowMenu
-        main.addItem(windowItem)
 
         NSApp.mainMenu = main
     }

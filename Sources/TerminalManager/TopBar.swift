@@ -2,19 +2,16 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Motion and layout constants shared by the bar and the terminal windows.
+/// Motion constants shared across the UI.
 enum Design {
     /// Strong ease-out, cubic-bezier(0.23, 1, 0.32, 1): starts fast, settles softly.
     static let easeOut = CAMediaTimingFunction(controlPoints: 0.23, 1, 0.32, 1)
     static let swiftUIEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.2)
 
     static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-
-    static let terminalBackground = NSColor(calibratedRed: 0.105, green: 0.107, blue: 0.125, alpha: 1)
 }
 
-/// Geometry of the bar, computed up front so the panel size and the pill
-/// positions (where windows open from) always agree with what SwiftUI draws.
+/// Geometry of the bar, computed up front so the panel size always matches what SwiftUI draws.
 struct BarLayout {
     static let padding: CGFloat = 5
     static let spacing: CGFloat = 4
@@ -22,32 +19,25 @@ struct BarLayout {
     static let outerRadius: CGFloat = 14
     /// Concentric corners: inner radius = outer radius - padding.
     static let innerRadius: CGFloat = outerRadius - padding
-    static let addButtonWidth: CGFloat = 34
-    static let emptyAddButtonWidth: CGFloat = 132
     static let maxPillWidth: CGFloat = 176
     static let minPillWidth: CGFloat = 92
+    static let noticeWidth: CGFloat = 250
 
     let count: Int
     let pillWidth: CGFloat
 
     init(count: Int, availableWidth: CGFloat) {
         self.count = count
-        let room = availableWidth - Self.padding * 2 - Self.addButtonWidth - Self.spacing * CGFloat(count)
+        let room = availableWidth - Self.padding * 2 - Self.spacing * CGFloat(max(count - 1, 0))
         let fit = count > 0 ? room / CGFloat(count) : Self.maxPillWidth
         pillWidth = floor(min(Self.maxPillWidth, max(Self.minPillWidth, fit)))
     }
 
-    var addWidth: CGFloat { count == 0 ? Self.emptyAddButtonWidth : Self.addButtonWidth }
-
     var size: CGSize {
-        let pills = CGFloat(count) * (pillWidth + Self.spacing)
-        return CGSize(width: Self.padding * 2 + pills + addWidth, height: Self.padding * 2 + Self.pillHeight)
-    }
-
-    /// Pill frame in the bar's coordinates (origin bottom-left, like AppKit).
-    func pillFrame(at index: Int) -> CGRect {
-        CGRect(x: Self.padding + CGFloat(index) * (pillWidth + Self.spacing),
-               y: Self.padding, width: pillWidth, height: Self.pillHeight)
+        let content = count > 0
+            ? CGFloat(count) * pillWidth + CGFloat(count - 1) * Self.spacing
+            : Self.noticeWidth
+        return CGSize(width: Self.padding * 2 + content, height: Self.padding * 2 + Self.pillHeight)
     }
 
     /// Narrow pills drop the second line rather than squeezing it into "…".
@@ -59,12 +49,17 @@ struct BarLayout {
     }
 }
 
-/// The floating strip at the top of the screen with one pill per terminal.
+/// The floating strip at the top of the screen with one pill per Terminal window.
+/// It only exists while there is something to show.
 @MainActor
 final class TopBarPanel: NSPanel {
     private let store: SessionStore
     private var targetFrame: NSRect = .zero
-    private var sessionsObserver: AnyCancellable?
+    private var observers: Set<AnyCancellable> = []
+    /// You can hide the bar from the menu bar menu; then it stays hidden.
+    var userHidden = false {
+        didSet { updateVisibility() }
+    }
 
     init(store: SessionStore) {
         self.store = store
@@ -85,29 +80,36 @@ final class TopBarPanel: NSPanel {
         animationBehavior = .none
         contentView = NSHostingView(rootView: BarView(store: store))
         relayout(animated: false)
-        // Resize right away when a terminal is added or closed (not on the next poll).
+
+        // React right away when windows come and go (not on the next poll).
         // @Published fires before the change lands, so hop to the next main-queue turn.
-        sessionsObserver = store.$sessions.receive(on: DispatchQueue.main).sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.relayout() }
-        }
+        store.$windows.combineLatest(store.$accessDenied)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.relayout()
+                    self?.updateVisibility()
+                }
+            }
+            .store(in: &observers)
     }
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    var layout: BarLayout { BarLayout.current(count: store.sessions.count) }
+    private var hasContent: Bool { !store.windows.isEmpty || store.accessDenied }
 
     /// Resize to fit the pills and stay centered just below the menu bar.
     /// Called on every poll, so it only does work when the target changes.
     func relayout(animated: Bool = true) {
         guard let screen = NSScreen.screens.first else { return }
-        let size = layout.size
+        let size = BarLayout.current(count: store.windows.count).size
         let visible = screen.visibleFrame
         let frame = NSRect(x: visible.midX - size.width / 2, y: visible.maxY - size.height - 6,
                            width: size.width, height: size.height).integral
         guard frame != targetFrame else { return }
         targetFrame = frame
-        if animated, isVisible, !Design.reduceMotion {
+        if animated, isVisible, alphaValue > 0, !Design.reduceMotion {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.2
                 context.timingFunction = Design.easeOut
@@ -118,12 +120,37 @@ final class TopBarPanel: NSPanel {
         }
     }
 
-    /// Screen rect of a session's pill, so its window can open right underneath it.
-    func pillFrameOnScreen(for session: TerminalSession) -> NSRect? {
-        guard let index = store.sessions.firstIndex(where: { $0 === session }) else { return nil }
-        let local = layout.pillFrame(at: index)
-        return local.offsetBy(dx: targetFrame.minX, dy: targetFrame.minY)
+    private var showing = false
+
+    /// Fades in when your first Terminal window opens; fades out (faster) when the last one closes.
+    private func updateVisibility() {
+        let shouldShow = hasContent && !userHidden
+        guard shouldShow != showing else { return }
+        showing = shouldShow
+        if shouldShow {
+            setFrame(targetFrame, display: false)
+            alphaValue = 0
+            orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                context.timingFunction = Design.easeOut
+                animator().alphaValue = 1
+            }
+        } else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.15
+                context.timingFunction = Design.easeOut
+                animator().alphaValue = 0
+            } completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, !self.showing else { return }
+                    self.orderOut(nil)
+                }
+            }
+        }
     }
+
+    var isShowing: Bool { showing }
 }
 
 // MARK: - Views
@@ -132,17 +159,18 @@ struct BarView: View {
     @ObservedObject var store: SessionStore
 
     var body: some View {
-        let layout = BarLayout.current(count: store.sessions.count)
+        let layout = BarLayout.current(count: store.windows.count)
         HStack(spacing: BarLayout.spacing) {
-            ForEach(store.sessions) { session in
-                SessionPill(session: session, store: store, width: layout.pillWidth, showsDetail: layout.showsDetail)
+            if store.windows.isEmpty && store.accessDenied {
+                AccessNotice()
+            }
+            ForEach(store.windows) { window in
+                WindowPill(window: window, store: store, width: layout.pillWidth, showsDetail: layout.showsDetail)
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .scale(scale: 0.95)).animation(Design.swiftUIEaseOut),
                         removal: .opacity.animation(.easeOut(duration: 0.12))
                     ))
             }
-            AddButton(store: store, isEmpty: store.sessions.isEmpty)
-                .frame(width: layout.addWidth, height: BarLayout.pillHeight)
         }
         .padding(BarLayout.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -183,54 +211,48 @@ struct PressableStyle: ButtonStyle {
     }
 }
 
-struct AddButton: View {
-    let store: SessionStore
-    let isEmpty: Bool
-
+/// Shown instead of pills when macOS hasn't let us see Terminal's windows yet.
+struct AccessNotice: View {
     var body: some View {
         Button {
-            store.newSession()
+            Permissions.openAutomationSettings()
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                if isEmpty {
-                    Text("New Terminal").font(.system(size: 12, weight: .medium))
+            HStack(spacing: 8) {
+                Image(systemName: "lock.fill").font(.system(size: 11)).foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Allow access to Terminal").font(.system(size: 12, weight: .semibold))
+                    Text("Privacy & Security → Automation").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 0)
             }
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 10)
+            .frame(width: BarLayout.noticeWidth, height: BarLayout.pillHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
-        .help("New terminal (⌘T)")
-        .contextMenu {
-            Button("New Terminal") { store.newSession() }
-            Button("New Terminal in Folder…") { store.newSessionInFolder() }
-        }
     }
 }
 
-struct SessionPill: View {
-    @ObservedObject var session: TerminalSession
+struct WindowPill: View {
+    @ObservedObject var window: ManagedWindow
     let store: SessionStore
     let width: CGFloat
     let showsDetail: Bool
 
-    private var state: ActivityState { session.state }
+    private var state: ActivityState { window.state }
 
     var body: some View {
         Button {
-            store.toggle(session)
+            store.toggle(window)
         } label: {
             HStack(spacing: 8) {
                 StatusDot(state: state)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(session.name)
+                    Text(window.name)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(state == .idle ? HierarchicalShapeStyle.secondary : HierarchicalShapeStyle.primary)
                     if showsDetail {
-                        Text(session.detail)
+                        Text(window.detail)
                             .font(.system(size: 10))
                             .foregroundStyle(state == .needsInput ? AnyShapeStyle(state.color) : AnyShapeStyle(.secondary))
                     }
@@ -238,7 +260,7 @@ struct SessionPill: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 Spacer(minLength: 0)
-                if session.keepOpen {
+                if window.keepOpen {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 8))
                         .foregroundStyle(.tertiary)
@@ -254,17 +276,22 @@ struct SessionPill: View {
                 RoundedRectangle(cornerRadius: BarLayout.innerRadius, style: .continuous)
                     .strokeBorder(state.color.opacity(state.wantsAttention ? 0.45 : 0), lineWidth: 1)
             )
+            // The window you're looking at gets a quiet outline, so you know which pill it is.
+            .overlay(
+                RoundedRectangle(cornerRadius: BarLayout.innerRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(window.isViewed && !state.wantsAttention ? 0.18 : 0), lineWidth: 1)
+            )
             .animation(.easeOut(duration: 0.2), value: state)
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
-        .help("\(session.name) — \(state.label)\n\((session.directory as NSString).abbreviatingWithTildeInPath)")
+        .help("\(window.name) — \(state.label)\n\((window.directory as NSString).abbreviatingWithTildeInPath)")
         .contextMenu {
-            Button(session.isFrontmost ? "Hide" : "Show") { store.toggle(session) }
-            Button("Rename…") { store.rename(session) }
-            Toggle("Keep Open (No Auto-Hide)", isOn: $session.keepOpen)
+            Button(window.isViewed ? "Minimize" : "Show") { store.toggle(window) }
+            Button("Rename…") { store.rename(window) }
+            Toggle("Keep Open (No Auto-Minimize)", isOn: $window.keepOpen)
             Divider()
-            Button("Close Terminal…") { store.confirmAndClose(session) }
+            Button("Close Window") { store.close(window) }
         }
     }
 
@@ -273,7 +300,6 @@ struct SessionPill: View {
         switch state {
         case .needsInput: return 0.2
         case .done: return 0.14
-        case .exited: return 0.1
         case .working, .idle: return 0
         }
     }
@@ -309,41 +335,5 @@ struct StatusDot: View {
         }
         .frame(width: 18, height: 18)
         .animation(.easeOut(duration: 0.2), value: state)
-    }
-}
-
-/// Shown in the terminal window's title bar: current state and the Keep Open pin.
-struct WindowStatusView: View {
-    @ObservedObject var session: TerminalSession
-
-    var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 5) {
-                Circle().fill(session.state.color).frame(width: 7, height: 7)
-                Text(session.state.label)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    // Fixed width: the title bar accessory doesn't resize when the label changes.
-                    .frame(width: 62, alignment: .leading)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(session.state.color.opacity(0.14), in: Capsule())
-            .animation(.easeOut(duration: 0.2), value: session.state)
-
-            Button {
-                session.keepOpen.toggle()
-            } label: {
-                Image(systemName: session.keepOpen ? "pin.fill" : "pin")
-                    .font(.system(size: 11))
-                    .foregroundStyle(session.keepOpen ? HierarchicalShapeStyle.primary : HierarchicalShapeStyle.secondary)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(PressableStyle())
-            .help(session.keepOpen ? "Keep Open is on: this window won't hide itself" : "Keep this window open (no auto-hide)")
-        }
-        .padding(.trailing, 8)
-        .frame(height: 28)
     }
 }

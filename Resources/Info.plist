@@ -22,6 +22,8 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Terminal Manager reads your Terminal windows to show what each one is doing, and minimizes or brings them forward when you click them.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Arttu Puttonen</string>
 </dict>

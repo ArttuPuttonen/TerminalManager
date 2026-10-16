@@ -1,102 +1,134 @@
 import AppKit
 import Combine
 
-/// Owns all terminals, polls their state and reacts to changes.
+/// Tracks every Terminal.app window, polls their state and reacts to changes.
 @MainActor
 final class SessionStore: ObservableObject {
-    @Published private(set) var sessions: [TerminalSession] = []
+    @Published private(set) var windows: [ManagedWindow] = []
+    /// macOS hasn't allowed us to read Terminal's windows (Privacy & Security → Automation).
+    @Published private(set) var accessDenied = false
 
-    /// Where a session's pill is on screen, so its window can open right below it.
-    var pillFrame: ((TerminalSession) -> NSRect?)?
     /// Called after every poll so the bar and menu bar icon can refresh.
     var onTick: (() -> Void)?
 
+    private let bridge = TerminalBridge()
     private var timer: Timer?
-    private var keyMonitor: Any?
+    private var snapshotInFlight = false
+    private var lastSnapshot = Date.distantPast
 
     init() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
-        // SwiftTerm does not let us override keyDown, so watch key presses app-wide and
-        // credit them to the terminal that has focus.
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            MainActor.assumeIsolated {
-                if let view = event.window?.firstResponder as? ManagedTerminalView,
-                   let session = self?.sessions.first(where: { $0.terminalView === view }) {
-                    session.userDidType()
-                }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
+                     NSWorkspace.didActivateApplicationNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                guard app?.bundleIdentifier == TerminalBridge.bundleID else { return }
+                MainActor.assumeIsolated { self?.refreshSoon() }
             }
-            return event
+        }
+        refreshSnapshot()
+    }
+
+    var attentionCount: Int { windows.filter { $0.state.wantsAttention }.count }
+
+    // MARK: Polling
+
+    private func tick() {
+        // Window list from Terminal every ~1.5 s (AppleScript); tty state every 0.5 s (cheap, local).
+        if Date().timeIntervalSince(lastSnapshot) > 1.5 { refreshSnapshot() }
+        windows.forEach { $0.tick() }
+        onTick?()
+    }
+
+    private func refreshSoon() {
+        lastSnapshot = .distantPast
+    }
+
+    private func refreshSnapshot() {
+        guard !snapshotInFlight else { return }
+        snapshotInFlight = true
+        lastSnapshot = Date()
+        bridge.snapshot { [weak self] result in
+            guard let self else { return }
+            self.snapshotInFlight = false
+            switch result {
+            case .success(let snapshots):
+                if self.accessDenied { self.accessDenied = false }
+                self.apply(snapshots)
+            case .failure(.notRunning):
+                self.apply([])
+            case .failure(.notAuthorized):
+                if !self.accessDenied { self.accessDenied = true }
+                self.apply([])
+            case .failure(.other):
+                break // transient (e.g. Terminal busy); keep what we have
+            }
         }
     }
 
-    var attentionCount: Int { sessions.filter { $0.state.wantsAttention }.count }
+    private func apply(_ snapshots: [WindowSnapshot]) {
+        let byID = Dictionary(snapshots.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Keep existing pills where they are; new windows join at the end.
+        var updated = windows.filter { byID[$0.id] != nil }
+        for snapshot in snapshots where !updated.contains(where: { $0.id == snapshot.id }) {
+            let window = ManagedWindow(id: snapshot.id)
+            window.onStateChange = { [weak self] window, old, new in self?.stateChanged(window, from: old, to: new) }
+            window.onAutoHide = { [weak self] window in self?.minimize(window) }
+            updated.append(window)
+        }
+        for window in updated {
+            if let snapshot = byID[window.id] { window.apply(snapshot) }
+        }
+        let removed = windows.filter { byID[$0.id] == nil }
+        removed.forEach { Notifier.shared.clear(for: $0) }
+        if updated.map(\.id) != windows.map(\.id) {
+            windows = updated
+            updated.forEach { $0.tick() }
+        }
+    }
 
-    // MARK: Creating and closing
+    // MARK: Actions
 
-    @discardableResult
-    func newSession(name: String? = nil, directory: String? = nil, show: Bool = true) -> TerminalSession {
-        let dir = directory ?? FileManager.default.homeDirectoryForCurrentUser.path
-        let defaultName: String
-        if directory != nil {
-            defaultName = (dir as NSString).lastPathComponent
+    func show(_ window: ManagedWindow) {
+        guard let tab = window.urgentTab ?? window.tabs.first else { return }
+        bridge.show(windowID: window.id, tab: tab.index)
+        window.assume(miniaturized: false, frontmost: true)
+        Notifier.shared.clear(for: window)
+        refreshSoon()
+    }
+
+    func minimize(_ window: ManagedWindow) {
+        bridge.minimize(windowID: window.id)
+        window.assume(miniaturized: true, frontmost: false)
+        refreshSoon()
+    }
+
+    func toggle(_ window: ManagedWindow) {
+        if window.isViewed {
+            minimize(window)
         } else {
-            defaultName = "Terminal \(sessions.count + 1)"
+            show(window)
         }
-        let session = TerminalSession(name: name ?? defaultName, directory: dir)
-        session.onStateChange = { [weak self] session, old, new in
-            self?.stateChanged(session, from: old, to: new)
-        }
-        session.onExit = { [weak self] session in
-            // Typing `exit` closes the terminal.
-            self?.close(session)
-        }
-        session.onAutoHide = { [weak self] session in
-            self?.autoHide(session)
-        }
-        sessions.append(session)
-        save()
-        if show { self.show(session) }
-        return session
     }
 
-    func newSessionInFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Open Terminal Here"
-        NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        newSession(directory: url.path)
+    func showNextNeedingAttention() {
+        let ordered = windows.filter { $0.state == .needsInput } + windows.filter { $0.state == .done }
+        if let window = ordered.first { show(window) }
     }
 
-    func close(_ session: TerminalSession) {
-        session.terminate()
-        sessions.removeAll { $0 === session }
-        Notifier.shared.clear(for: session)
-        save()
+    func minimizeAll() {
+        windows.filter { !$0.isMiniaturized }.forEach { minimize($0) }
     }
 
-    func confirmAndClose(_ session: TerminalSession) {
-        if session.state == .working || session.state == .needsInput {
-            let alert = NSAlert()
-            alert.messageText = "Close “\(session.name)”?"
-            alert.informativeText = "\(session.processName) is still running in this terminal and will be stopped."
-            alert.addButton(withTitle: "Close")
-            alert.addButton(withTitle: "Cancel")
-            NSApp.activate(ignoringOtherApps: true)
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-        }
-        close(session)
-    }
-
-    func rename(_ session: TerminalSession) {
+    func rename(_ window: ManagedWindow) {
+        guard let tab = window.tabs.first(where: \.selected) ?? window.tabs.first else { return }
         let alert = NSAlert()
         alert.messageText = "Rename terminal"
-        alert.informativeText = "Give it a name that says what it is working on."
-        let field = NSTextField(string: session.name)
+        alert.informativeText = "Give it a name that says what it's working on. It's also shown as the tab's title in Terminal."
+        let field = NSTextField(string: tab.customTitle.isEmpty ? window.name : tab.customTitle)
         field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
         alert.accessoryView = field
         alert.addButton(withTitle: "Rename")
@@ -104,84 +136,33 @@ final class SessionStore: ObservableObject {
         alert.window.initialFirstResponder = field
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
-        if !name.isEmpty {
-            session.rename(name)
-            save()
-        }
+        bridge.setTitle(field.stringValue.trimmingCharacters(in: .whitespaces), windowID: window.id, tab: tab.index)
+        refreshSoon()
     }
 
-    // MARK: Showing and hiding
-
-    func show(_ session: TerminalSession) {
-        session.show(below: pillFrame?(session))
-        Notifier.shared.clear(for: session)
+    func close(_ window: ManagedWindow) {
+        bridge.close(windowID: window.id)
+        refreshSoon()
     }
 
-    func toggle(_ session: TerminalSession) {
-        if session.isFrontmost {
-            session.hide(animated: true)
-        } else {
-            show(session)
-        }
+    func window(withID id: Int) -> ManagedWindow? {
+        windows.first { $0.id == id }
     }
 
-    func showNextNeedingAttention() {
-        let ordered = sessions.filter { $0.state == .needsInput } + sessions.filter { $0.state == .done }
-        if let session = ordered.first { show(session) }
-    }
+    // MARK: Notifications
 
-    func hideAll() {
-        sessions.forEach { $0.hide() }
-    }
-
-    private func autoHide(_ session: TerminalSession) {
-        session.hide(animated: true)
-        // Hand focus back to whatever you were doing, unless another terminal is still open.
-        if !sessions.contains(where: { $0.window.isVisible }) {
-            NSApp.deactivate()
-        }
-    }
-
-    // MARK: Polling
-
-    private func tick() {
-        sessions.forEach { $0.tick() }
-        onTick?()
-    }
-
-    private func stateChanged(_ session: TerminalSession, from old: ActivityState, to new: ActivityState) {
-        objectWillChange.send()
-        if session.isFrontmost { return }
+    private func stateChanged(_ window: ManagedWindow, from old: ActivityState, to new: ActivityState) {
+        if window.isViewed { return }
         switch new {
         case .needsInput where old == .working:
-            Notifier.shared.post(for: session, title: "\(session.name) needs you",
-                                 body: session.programTitle.isEmpty ? "\(session.processName) is waiting for input." : session.programTitle)
+            Notifier.shared.post(for: window, title: "\(window.name) needs you", body: window.detail)
         case .done:
-            Notifier.shared.post(for: session, title: "\(session.name) finished",
-                                 body: "The command finished in \((session.directory as NSString).abbreviatingWithTildeInPath).")
+            Notifier.shared.post(for: window, title: "\(window.name) finished",
+                                 body: "The command finished in \((window.directory as NSString).abbreviatingWithTildeInPath).")
         case .working:
-            Notifier.shared.clear(for: session)
+            Notifier.shared.clear(for: window)
         default:
             break
         }
-    }
-
-    // MARK: Persistence
-
-    func save() {
-        Settings.shared.savedSessions = sessions.map { SavedSession(name: $0.name, directory: $0.directory) }
-    }
-
-    func restore() {
-        guard Settings.shared.restoreSessions else { return }
-        for saved in Settings.shared.savedSessions {
-            let dir = FileManager.default.fileExists(atPath: saved.directory) ? saved.directory : nil
-            newSession(name: saved.name, directory: dir, show: false)
-        }
-    }
-
-    func session(withID id: String) -> TerminalSession? {
-        sessions.first { $0.id.uuidString == id }
     }
 }

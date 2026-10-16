@@ -6,8 +6,8 @@ import UserNotifications
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static let shared = Notifier()
 
-    /// Called when you click a notification, with the session id.
-    var onOpen: ((String) -> Void)?
+    /// Called when you click a notification, with the Terminal window id.
+    var onOpen: ((Int) -> Void)?
 
     /// UNUserNotificationCenter crashes when the binary is not inside an .app bundle
     /// (e.g. `swift run`), so only use it when we have a bundle identifier.
@@ -21,28 +21,28 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
-    func post(for session: TerminalSession, title: String, body: String) {
+    func post(for window: ManagedWindow, title: String, body: String) {
         if Settings.shared.sound {
-            NSSound(named: session.state == .done ? "Glass" : "Ping")?.play()
+            NSSound(named: window.state == .done ? "Glass" : "Ping")?.play()
         }
         guard Settings.shared.notifications, let center else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.userInfo = ["session": session.id.uuidString]
-        content.threadIdentifier = session.id.uuidString
-        let request = UNNotificationRequest(identifier: session.id.uuidString, content: content, trigger: nil)
+        content.userInfo = ["window": window.id]
+        content.threadIdentifier = String(window.id)
+        let request = UNNotificationRequest(identifier: String(window.id), content: content, trigger: nil)
         center.add(request)
     }
 
-    func clear(for session: TerminalSession) {
-        center?.removeDeliveredNotifications(withIdentifiers: [session.id.uuidString])
+    func clear(for window: ManagedWindow) {
+        center?.removeDeliveredNotifications(withIdentifiers: [String(window.id)])
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
-        let id = response.notification.request.content.userInfo["session"] as? String
+        let id = response.notification.request.content.userInfo["window"] as? Int
         Task { @MainActor in
             if let id { self.onOpen?(id) }
         }

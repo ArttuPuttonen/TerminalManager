@@ -1,14 +1,8 @@
 import Darwin
 import Foundation
 
-/// Low-level helpers that look at what is running inside a terminal's pty.
+/// Low-level helpers that look at what is running inside a terminal.
 enum ProcessInspector {
-    /// The process group that currently owns the terminal (the "foreground job").
-    static func foregroundGroup(ptyFD: Int32) -> pid_t {
-        guard ptyFD >= 0 else { return -1 }
-        return tcgetpgrp(ptyFD)
-    }
-
     static func name(of pid: pid_t) -> String? {
         guard pid > 0 else { return nil }
         var buffer = [CChar](repeating: 0, count: 1024)
@@ -29,24 +23,6 @@ enum ProcessInspector {
         return path.isEmpty ? nil : path
     }
 
-    static func pids(inGroup pgid: pid_t) -> [pid_t] {
-        guard pgid > 0 else { return [] }
-        let needed = proc_listpids(UInt32(PROC_PGRP_ONLY), UInt32(pgid), nil, 0)
-        guard needed > 0 else { return [pgid] }
-        let stride = MemoryLayout<pid_t>.stride
-        var pids = [pid_t](repeating: 0, count: Int(needed) / stride + 16)
-        let bytes = pids.withUnsafeMutableBytes { raw in
-            proc_listpids(UInt32(PROC_PGRP_ONLY), UInt32(pgid), raw.baseAddress, Int32(raw.count))
-        }
-        guard bytes > 0 else { return [pgid] }
-        return pids.prefix(Int(bytes) / stride).filter { $0 > 0 }
-    }
-
-    /// Total CPU time (user + system) consumed by every process in the group, in seconds.
-    static func cpuSeconds(group pgid: pid_t) -> Double {
-        pids(inGroup: pgid).reduce(0) { $0 + cpuSeconds(pid: $1) }
-    }
-
     static func cpuSeconds(pid: pid_t) -> Double {
         var info = proc_taskinfo()
         let size = Int32(MemoryLayout<proc_taskinfo>.size)
@@ -61,4 +37,47 @@ enum ProcessInspector {
         mach_timebase_info(&timebase)
         return timebase.denom == 0 ? 1 : Double(timebase.numer) / Double(timebase.denom)
     }()
+}
+
+/// A process attached to a terminal device, from the kernel's process table.
+struct TTYProcess {
+    let pid: pid_t
+    let parentPid: pid_t
+    let groupID: pid_t
+    /// The terminal's foreground process group.
+    let terminalGroupID: pid_t
+    let name: String
+}
+
+extension ProcessInspector {
+    /// Every process whose controlling terminal is `ttyPath` (e.g. /dev/ttys003).
+    static func processes(onTTY ttyPath: String) -> [TTYProcess] {
+        var info = stat()
+        guard stat(ttyPath, &info) == 0 else { return [] }
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_TTY, Int32(info.st_rdev)]
+        var size = 0
+        guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0, size > 0 else { return [] }
+        let stride = MemoryLayout<kinfo_proc>.stride
+        var procs = [kinfo_proc](repeating: kinfo_proc(), count: size / stride + 8)
+        size = procs.count * stride
+        guard sysctl(&mib, UInt32(mib.count), &procs, &size, nil, 0) == 0 else { return [] }
+        return procs.prefix(size / stride).map { kp in
+            let name = withUnsafeBytes(of: kp.kp_proc.p_comm) { raw in
+                String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+            }
+            return TTYProcess(pid: kp.kp_proc.p_pid, parentPid: kp.kp_eproc.e_ppid, groupID: kp.kp_eproc.e_pgid,
+                              terminalGroupID: kp.kp_eproc.e_tpgid, name: name)
+        }
+    }
+
+    /// The kernel stamps a terminal device on every write (program output) and read (your input),
+    /// with about one second of precision. That lets us see activity in another app's terminals.
+    static func ttyActivity(_ ttyPath: String) -> (lastOutput: Date, lastInput: Date)? {
+        var info = stat()
+        guard stat(ttyPath, &info) == 0 else { return nil }
+        func date(_ ts: timespec) -> Date {
+            Date(timeIntervalSince1970: Double(ts.tv_sec) + Double(ts.tv_nsec) / 1_000_000_000)
+        }
+        return (date(info.st_mtimespec), date(info.st_atimespec))
+    }
 }

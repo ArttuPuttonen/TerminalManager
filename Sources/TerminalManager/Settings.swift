@@ -12,7 +12,6 @@ final class Settings {
             Keys.notifications: true,
             Keys.sound: true,
             Keys.quietSeconds: 4.0,
-            Keys.restoreSessions: true,
         ])
     }
 
@@ -21,11 +20,10 @@ final class Settings {
         static let notifications = "notifications"
         static let sound = "sound"
         static let quietSeconds = "quietSeconds"
-        static let restoreSessions = "restoreSessions"
-        static let savedSessions = "savedSessions"
+        static let didSetUpLoginItem = "didSetUpLoginItem"
     }
 
-    /// Hide a terminal window automatically once it goes back to working on its own.
+    /// Minimize a Terminal window automatically once it goes back to working on its own.
     var autoHide: Bool {
         get { defaults.bool(forKey: Keys.autoHide) }
         set { defaults.set(newValue, forKey: Keys.autoHide) }
@@ -47,22 +45,9 @@ final class Settings {
         set { defaults.set(newValue, forKey: Keys.quietSeconds) }
     }
 
-    /// Reopen the terminals (name + folder) that were open when the app quit.
-    var restoreSessions: Bool {
-        get { defaults.bool(forKey: Keys.restoreSessions) }
-        set { defaults.set(newValue, forKey: Keys.restoreSessions) }
+    /// Whether we already turned on "Open at Login" once (so we never override your choice).
+    var didSetUpLoginItem: Bool {
+        get { defaults.bool(forKey: Keys.didSetUpLoginItem) }
+        set { defaults.set(newValue, forKey: Keys.didSetUpLoginItem) }
     }
-
-    var savedSessions: [SavedSession] {
-        get {
-            guard let data = defaults.data(forKey: Keys.savedSessions) else { return [] }
-            return (try? JSONDecoder().decode([SavedSession].self, from: data)) ?? []
-        }
-        set { defaults.set(try? JSONEncoder().encode(newValue), forKey: Keys.savedSessions) }
-    }
-}
-
-struct SavedSession: Codable {
-    var name: String
-    var directory: String
 }
