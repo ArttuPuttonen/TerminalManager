@@ -380,7 +380,9 @@ final class ManagedWindow: ObservableObject, Identifiable {
             }
         case .working: newDetail = (program.isEmpty ? "Working" : program) + " · \(elapsed)"
         case .done: newDetail = "Done \(elapsed) ago"
-        case .idle: newDetail = (directory as NSString).abbreviatingWithTildeInPath
+        case .idle:
+            let path = (directory as NSString).abbreviatingWithTildeInPath
+            newDetail = path.isEmpty || path == "~" ? "Idle" : path
         }
         if tabs.count > 1 { newDetail = "\(tabs.count) tabs · " + newDetail }
         if newDetail != detail { detail = newDetail }

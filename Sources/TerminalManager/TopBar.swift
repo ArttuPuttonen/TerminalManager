@@ -57,7 +57,35 @@ struct BarLayout {
     }
 
     // The hover card under a pill: what it's doing or asking, with Allow / Open.
-    static let cardSize = CGSize(width: 340, height: 172)
+    static let cardWidth: CGFloat = 340
+
+    /// Height of the card for a window, or nil when there's nothing worth a card: the window
+    /// is already open in front of you, or it's idle with nothing to report. Sized to its text
+    /// (estimated, so the panel and the view agree without measuring).
+    @MainActor
+    static func cardHeight(for window: ManagedWindow) -> CGFloat? {
+        let preview = window.preview
+        if window.isViewed { return nil }
+        if preview.state == .idle && preview.task.isEmpty { return nil }
+        func lines(_ text: String, perLine: Double, max limit: Int) -> Int {
+            let count = text.split(separator: "\n", omittingEmptySubsequences: false)
+                .reduce(0) { $0 + Swift.max(1, Int((Double($1.count) / perLine).rounded(.up))) }
+            return Swift.min(limit, Swift.max(1, count))
+        }
+        var height: CGFloat = 12 + 20 // padding + header
+        if !preview.task.isEmpty {
+            height += 7 + 15 * CGFloat(lines(preview.task, perLine: 50, max: 2))
+        }
+        let messageLimit = preview.task.isEmpty ? 6 : 4
+        let perLine = preview.canAllow ? 40.0 : 48.0
+        height += 7 + 16 * CGFloat(lines(preview.message.isEmpty ? " " : preview.message, perLine: perLine, max: messageLimit))
+        height += 10 + 26 + 12 // gap + buttons + padding
+        return height
+    }
+
+    static func messageLineLimit(for preview: ManagedWindow.Preview) -> Int {
+        preview.task.isEmpty ? 6 : 4
+    }
     static let cardGap: CGFloat = 8
 
     /// Center of pill `index`, measured from the capsule's center (for placing the card).
@@ -201,9 +229,10 @@ final class TopBarPanel: NSPanel {
         guard let screen = NSScreen.screens.first else { return }
         let layout = BarLayout.current(count: store.windows.count)
         var content = showsExpanded || expanding ? layout.size : layout.collapsedSize
-        if showsExpanded, barState.hoveredWindowID != nil {
-            content = CGSize(width: max(content.width, BarLayout.cardSize.width),
-                             height: content.height + BarLayout.cardGap + BarLayout.cardSize.height)
+        if showsExpanded, let id = barState.hoveredWindowID, let window = store.window(withID: id),
+           let cardHeight = BarLayout.cardHeight(for: window) {
+            content = CGSize(width: max(content.width, BarLayout.cardWidth),
+                             height: content.height + BarLayout.cardGap + cardHeight)
         }
         let margin = Self.shadowMargin
         let size = CGSize(width: content.width + margin.left + margin.right,
@@ -441,14 +470,11 @@ struct BarView: View {
     private func card(layout: BarLayout, expanded: Bool) -> some View {
         if expanded, let id = barState.hoveredWindowID,
            let index = store.windows.firstIndex(where: { $0.id == id }) {
-            let room = max(layout.size.width, BarLayout.cardSize.width)
-            let limit = (room - BarLayout.cardSize.width) / 2
+            let room = max(layout.size.width, BarLayout.cardWidth)
+            let limit = (room - BarLayout.cardWidth) / 2
             let offset = min(max(layout.pillCenterOffset(at: index), -limit), limit)
-            PreviewCard(window: store.windows[index], store: store)
+            CardSlot(window: store.windows[index], store: store)
                 .offset(x: offset)
-                .transition(.opacity
-                    .combined(with: .scale(scale: 0.96, anchor: .top))
-                    .combined(with: .modifier(active: BlurModifier(radius: 4), identity: BlurModifier(radius: 0))))
                 .animation(Design.morph, value: offset)
         }
     }
@@ -623,7 +649,6 @@ struct WindowPill: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
-        .help("\(window.name) — \(state.label)\n\((window.directory as NSString).abbreviatingWithTildeInPath)")
         .contextMenu {
             Button(window.isViewed ? "Hide" : "Show") { store.toggle(window) }
             Button("Rename…") { store.rename(window) }
@@ -676,10 +701,27 @@ struct StatusDot: View {
     }
 }
 
+/// Shows the card only when the window has something to show (watches the window directly,
+/// so it updates as its state changes).
+struct CardSlot: View {
+    @ObservedObject var window: ManagedWindow
+    let store: SessionStore
+
+    var body: some View {
+        if let height = BarLayout.cardHeight(for: window) {
+            PreviewCard(window: window, store: store, height: height)
+                .transition(.opacity
+                    .combined(with: .scale(scale: 0.96, anchor: .top))
+                    .combined(with: .modifier(active: BlurModifier(radius: 4), identity: BlurModifier(radius: 0))))
+        }
+    }
+}
+
 /// Hover card for one window: what it's doing, asking or finished with, plus Allow / Open.
 struct PreviewCard: View {
     @ObservedObject var window: ManagedWindow
     let store: SessionStore
+    let height: CGFloat
 
     var body: some View {
         let preview = window.preview
@@ -708,7 +750,7 @@ struct PreviewCard: View {
             Text(preview.message.isEmpty ? placeholder(for: preview.state) : preview.message)
                 .font(preview.canAllow ? .system(size: 12, design: .monospaced) : .system(size: 12))
                 .foregroundStyle(preview.message.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-                .lineLimit(preview.task.isEmpty ? 5 : 3)
+                .lineLimit(BarLayout.messageLineLimit(for: preview))
                 .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 0)
             HStack(spacing: 8) {
@@ -721,7 +763,8 @@ struct PreviewCard: View {
             }
         }
         .padding(12)
-        .frame(width: BarLayout.cardSize.width, height: BarLayout.cardSize.height, alignment: .topLeading)
+        .frame(width: BarLayout.cardWidth, height: height, alignment: .topLeading)
+        .animation(Design.morph, value: height)
         .background(.regularMaterial, in: shape)
         .overlay(
             shape.strokeBorder(
