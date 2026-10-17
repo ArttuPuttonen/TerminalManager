@@ -28,6 +28,13 @@ out of the Dock by making it invisible while it stays minimized, so nothing flas
 it in the Dock anyway, it just stays there; its pill works either way. You can turn this off in the menu.
 Clicking a pill always hides a window without touching the Dock. When Terminal Manager quits, windows hidden in the bar go back to the Dock so they are never lost.
 
+**Hover a pill** to see a card with what that terminal is up to: the task you gave Claude, the
+command it wants permission to run, the question it's asking, or its final message when done, plus
+how long it has been working, waiting or done. For a permission request, **Allow** answers Yes right
+from the card (it types "1" into that terminal, after checking the request is still waiting);
+**Open** brings the window up for anything else. Pills also show the time, e.g. "claude · 3m" or "Done 12m ago".
+The card details need Claude Code connected (see below).
+
 The **+** at the end of the bar opens a new Terminal window (right-click it to pick a folder first).
 It only shows while you have at least one Terminal window open.
 

@@ -25,24 +25,47 @@ enum ClaudeHooks {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
     }
 
+    /// What kind of answer Claude is waiting for.
+    enum Ask: String {
+        case permission, question, plan
+    }
+
     struct Status {
         let state: ActivityState
+        /// When the latest event arrived.
         let time: Date
+        /// What it's doing or asking ("Bash: npm test"), or its final message when done.
         let detail: String
+        /// The prompt you gave it for the current task.
+        let task: String
+        let ask: Ask?
     }
 
     // MARK: Reading (in the app)
 
+    private static func stateFile(forTTY tty: String) -> URL {
+        stateDirectory.appendingPathComponent((tty as NSString).lastPathComponent + ".json")
+    }
+
     /// Latest status Claude reported for the session in this tty, e.g. /dev/ttys003.
     static func status(forTTY tty: String) -> Status? {
-        let url = stateDirectory.appendingPathComponent((tty as NSString).lastPathComponent)
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        let fields = text.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
-        guard fields.count >= 2, let state = ActivityState(rawValue: fields[0]), let seconds = Double(fields[1]) else {
-            return nil
-        }
+        guard let data = try? Data(contentsOf: stateFile(forTTY: tty)),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let state = (json["state"] as? String).flatMap(ActivityState.init(rawValue:)),
+              let seconds = json["time"] as? Double else { return nil }
         return Status(state: state, time: Date(timeIntervalSince1970: seconds),
-                      detail: fields.count > 2 ? fields[2].trimmingCharacters(in: .whitespacesAndNewlines) : "")
+                      detail: json["detail"] as? String ?? "", task: json["task"] as? String ?? "",
+                      ask: (json["ask"] as? String).flatMap(Ask.init(rawValue:)))
+    }
+
+    /// You answered from the bar: show it as working right away, before Claude's next event.
+    static func markAnswered(tty: String) {
+        guard let status = status(forTTY: tty) else { return }
+        let record: [String: Any] = ["state": ActivityState.working.rawValue, "time": Date().timeIntervalSince1970,
+                                     "detail": status.detail, "task": status.task]
+        if let data = try? JSONSerialization.data(withJSONObject: record) {
+            try? data.write(to: stateFile(forTTY: tty), options: .atomic)
+        }
     }
 
     // MARK: Hook invocation (a short-lived process started by Claude Code)
@@ -53,22 +76,40 @@ enum ClaudeHooks {
         let input = FileHandle.standardInput.readDataToEndOfFile()
         let json = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] ?? [:]
         guard let tty = controllingTTYName() else { exit(0) }
-        let file = stateDirectory.appendingPathComponent(tty)
+        let file = stateFile(forTTY: tty)
+        let previous = status(forTTY: tty)
 
-        let state: ActivityState
+        var state: ActivityState
         var detail = ""
+        var task = previous?.task ?? ""
+        var ask: Ask?
         switch event {
         case "SessionStart":
             state = .idle
-        case "UserPromptSubmit", "PostToolUse":
+            task = ""
+        case "UserPromptSubmit":
             state = .working
+            task = clip(json["prompt"] as? String ?? "", 300)
+        case "PostToolUse":
+            state = .working
+            detail = previous?.detail ?? ""
         case "PreToolUse":
             let tool = json["tool_name"] as? String ?? ""
-            if askingTools.contains(tool) {
+            let toolInput = json["tool_input"] as? [String: Any] ?? [:]
+            switch tool {
+            case "AskUserQuestion":
                 state = .needsInput
-                detail = tool == "ExitPlanMode" ? "Plan ready for review" : "Asking you a question"
-            } else {
+                ask = .question
+                let questions = toolInput["questions"] as? [[String: Any]] ?? []
+                detail = questions.compactMap { $0["question"] as? String }.joined(separator: "\n")
+                if detail.isEmpty { detail = "Claude is asking you a question" }
+            case "ExitPlanMode":
+                state = .needsInput
+                ask = .plan
+                detail = "Plan ready for review:\n" + clip(toolInput["plan"] as? String ?? "", 600)
+            default:
                 state = .working
+                detail = toolSummary(tool, toolInput)
             }
         case "Notification":
             let message = json["message"] as? String ?? ""
@@ -76,9 +117,20 @@ enum ClaudeHooks {
             // "Claude is waiting for your input" is just the idle reminder after a finished turn.
             guard lower.contains("permission") || lower.contains("approv") || lower.contains("question") else { exit(0) }
             state = .needsInput
-            detail = message
+            if lower.contains("permission") {
+                ask = .permission
+                // PreToolUse just told us which tool and input it wants to run; show that.
+                let pending = previous?.state == .working ? previous?.detail ?? "" : ""
+                detail = pending.isEmpty ? message : pending
+            } else {
+                ask = previous?.ask ?? .question
+                detail = previous?.detail.isEmpty == false ? previous!.detail : message
+            }
         case "Stop":
             state = .done
+            let last = json["last_assistant_message"] as? String
+                ?? (json["transcript_path"] as? String).flatMap { lastAssistantText(transcriptPath: $0) } ?? ""
+            detail = clip(last, 600)
         case "SessionEnd":
             try? FileManager.default.removeItem(at: file)
             exit(0)
@@ -87,9 +139,50 @@ enum ClaudeHooks {
         }
 
         try? FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
-        let line = "\(state.rawValue)\t\(Date().timeIntervalSince1970)\t\(detail.replacingOccurrences(of: "\n", with: " "))\n"
-        try? line.write(to: file, atomically: true, encoding: .utf8)
+        var record: [String: Any] = ["state": state.rawValue, "time": Date().timeIntervalSince1970,
+                                     "detail": detail, "task": task]
+        if let ask { record["ask"] = ask.rawValue }
+        if let data = try? JSONSerialization.data(withJSONObject: record) {
+            try? data.write(to: file, options: .atomic)
+        }
         exit(0)
+    }
+
+    /// One line describing a tool call, e.g. "Bash: npm test" or "Edit: auth.ts".
+    private static func toolSummary(_ tool: String, _ input: [String: Any]) -> String {
+        if let command = input["command"] as? String { return "\(tool): " + clip(command, 200) }
+        if let path = input["file_path"] as? String ?? input["notebook_path"] as? String {
+            return "\(tool): " + (path as NSString).lastPathComponent
+        }
+        if let url = input["url"] as? String { return "\(tool): " + clip(url, 200) }
+        if let pattern = input["pattern"] as? String { return "\(tool): " + clip(pattern, 120) }
+        if let description = input["description"] as? String { return "\(tool): " + clip(description, 200) }
+        return tool
+    }
+
+    /// The text of Claude's last reply, read from the end of the session transcript (JSON lines).
+    private static func lastAssistantText(transcriptPath: String) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: transcriptPath) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        let chunk: UInt64 = 256 * 1024
+        try? handle.seek(toOffset: size > chunk ? size - chunk : 0)
+        guard let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n").reversed() {
+            guard let entry = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+                  entry["type"] as? String == "assistant",
+                  let message = entry["message"] as? [String: Any] else { continue }
+            let blocks = message["content"] as? [[String: Any]] ?? []
+            let texts = blocks.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }
+            let joined = texts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !joined.isEmpty { return joined }
+        }
+        return nil
+    }
+
+    private static func clip(_ text: String, _ limit: Int) -> String {
+        let flat = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return flat.count > limit ? String(flat.prefix(limit)) + "…" : flat
     }
 
     /// The terminal this hook belongs to: the first process up the parent chain that has

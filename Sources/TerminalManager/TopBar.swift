@@ -56,6 +56,24 @@ struct BarLayout {
         return CGSize(width: Self.padding * 2 + content, height: Self.padding * 2 + Self.pillHeight)
     }
 
+    // The hover card under a pill: what it's doing or asking, with Allow / Open.
+    static let cardSize = CGSize(width: 340, height: 172)
+    static let cardGap: CGFloat = 8
+
+    /// Center of pill `index`, measured from the capsule's center (for placing the card).
+    func pillCenterOffset(at index: Int) -> CGFloat {
+        Self.padding + CGFloat(index) * (pillWidth + Self.spacing) + pillWidth / 2 - size.width / 2
+    }
+
+    /// Which pill is at `x`, measured from the capsule's left edge; nil between pills or on +.
+    func pillIndex(atX x: CGFloat) -> Int? {
+        let offset = x - Self.padding
+        guard offset >= 0 else { return nil }
+        let index = Int(offset / (pillWidth + Self.spacing))
+        guard index < count, offset - CGFloat(index) * (pillWidth + Self.spacing) <= pillWidth else { return nil }
+        return index
+    }
+
     // Collapsed: one status dot per window in a small capsule under the notch.
     static let dotSize: CGFloat = 18
     static let dotSpacing: CGFloat = 3
@@ -108,7 +126,10 @@ final class TopBarPanel: NSPanel {
         becomesKeyOnlyIfNeeded = true
         animationBehavior = .none
         let hosting = NSHostingView(rootView: BarView(store: store, barState: barState))
-        let container = HoverTrackingView { [weak self] inside in self?.barState.hover(inside) }
+        let container = HoverTrackingView(
+            onChange: { [weak self] inside in self?.barState.hover(inside) },
+            onMove: { [weak self] point, bounds in self?.pointerMoved(to: point, in: bounds) }
+        )
         hosting.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(hosting)
         NSLayoutConstraint.activate([
@@ -122,7 +143,8 @@ final class TopBarPanel: NSPanel {
 
         // Grow the panel in the same turn, before the capsule starts growing inside it.
         barState.willExpand = { [weak self] in self?.relayout(expanding: true) }
-        barState.$expanded
+        barState.$expanded.map { _ in () }
+            .merge(with: barState.$hoveredWindowID.map { _ in () })
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.relayout() }
@@ -150,6 +172,22 @@ final class TopBarPanel: NSPanel {
     /// The access notice has nothing to collapse into, so it always shows in full.
     private var showsExpanded: Bool { barState.expanded || store.windows.isEmpty }
 
+    /// Works out which pill the mouse is over, so its card can show.
+    private func pointerMoved(to point: NSPoint, in bounds: NSRect) {
+        guard barState.expanded, !store.windows.isEmpty else { return }
+        let layout = BarLayout.current(count: store.windows.count)
+        let capsuleLeft = bounds.midX - layout.size.width / 2
+        let capsuleBottom = bounds.maxY - layout.size.height
+        // Below the pills is the card: keep it while the mouse travels down to its buttons.
+        guard point.y >= capsuleBottom else { return }
+        let index = layout.pillIndex(atX: point.x - capsuleLeft)
+        if let index {
+            barState.hoverWindow(store.windows[index].id)
+        } else if point.x - capsuleLeft > layout.size.width - BarLayout.padding - BarLayout.addButtonWidth {
+            barState.hoverWindow(nil) // over the + button
+        }
+    }
+
     /// Resize to fit the pills and stay centered just below the menu bar.
     /// Called on every poll, so it only does work when the target changes.
     /// Room around the capsule for its shadow.
@@ -162,10 +200,14 @@ final class TopBarPanel: NSPanel {
     func relayout(animated: Bool = true, expanding: Bool = false) {
         guard let screen = NSScreen.screens.first else { return }
         let layout = BarLayout.current(count: store.windows.count)
-        let capsule = showsExpanded || expanding ? layout.size : layout.collapsedSize
+        var content = showsExpanded || expanding ? layout.size : layout.collapsedSize
+        if showsExpanded, barState.hoveredWindowID != nil {
+            content = CGSize(width: max(content.width, BarLayout.cardSize.width),
+                             height: content.height + BarLayout.cardGap + BarLayout.cardSize.height)
+        }
         let margin = Self.shadowMargin
-        let size = CGSize(width: capsule.width + margin.left + margin.right,
-                          height: capsule.height + margin.top + margin.bottom)
+        let size = CGSize(width: content.width + margin.left + margin.right,
+                          height: content.height + margin.top + margin.bottom)
         let visible = screen.visibleFrame
         let frame = NSRect(x: visible.midX - size.width / 2, y: visible.maxY - 4 - size.height,
                            width: size.width, height: size.height).integral
@@ -232,6 +274,9 @@ final class TopBarPanel: NSPanel {
 @MainActor
 final class BarState: ObservableObject {
     @Published private(set) var expanded = false
+    /// The pill whose card is showing.
+    @Published private(set) var hoveredWindowID: Int?
+    private var pendingCard: DispatchWorkItem?
     /// Called right before expanding, so the panel can make room first.
     var willExpand: (() -> Void)?
     private var pending: DispatchWorkItem?
@@ -257,6 +302,25 @@ final class BarState: ObservableObject {
         schedule()
     }
 
+    /// Shows the card for a pill. Like tooltips: the first card waits a beat so passing over
+    /// the bar doesn't pop it, but once one is showing, moving to the next pill is instant.
+    func hoverWindow(_ id: Int?) {
+        guard id != hoveredWindowID else { pendingCard?.cancel(); return }
+        pendingCard?.cancel()
+        if id == nil || hoveredWindowID != nil {
+            withAnimation(Design.morph) { hoveredWindowID = id }
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.expanded else { return }
+                withAnimation(Design.morph) { self.hoveredWindowID = id }
+            }
+        }
+        pendingCard = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
     /// Expand right away (e.g. on click).
     func expand() {
         pending?.cancel()
@@ -265,7 +329,11 @@ final class BarState: ObservableObject {
 
     private func set(_ value: Bool) {
         if value { willExpand?() }
-        withAnimation(Design.morph) { expanded = value }
+        if !value { pendingCard?.cancel() }
+        withAnimation(Design.morph) {
+            expanded = value
+            if !value { hoveredWindowID = nil }
+        }
     }
 
     private func schedule() {
@@ -293,17 +361,27 @@ final class BarState: ObservableObject {
 /// (SwiftUI's hover tracking only works in the active app).
 final class HoverTrackingView: NSView {
     private let onChange: (Bool) -> Void
+    private let onMove: (NSPoint, NSRect) -> Void
 
-    init(onChange: @escaping (Bool) -> Void) {
+    init(onChange: @escaping (Bool) -> Void, onMove: @escaping (NSPoint, NSRect) -> Void) {
         self.onChange = onChange
+        self.onMove = onMove
         super.init(frame: .zero)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        onMove(convert(event.locationInWindow, from: nil), bounds)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    override func mouseEntered(with event: NSEvent) { onChange(true) }
+    override func mouseEntered(with event: NSEvent) {
+        onChange(true)
+        onMove(convert(event.locationInWindow, from: nil), bounds)
+    }
     override func mouseExited(with event: NSEvent) { onChange(false) }
 }
 
@@ -317,6 +395,7 @@ struct BarView: View {
         let size = expanded ? layout.size : layout.collapsedSize
         let shape = RoundedRectangle(cornerRadius: expanded ? BarLayout.outerRadius : BarLayout.collapsedHeight / 2,
                                      style: .continuous)
+        VStack(spacing: BarLayout.cardGap) {
         ZStack(alignment: .center) {
             if expanded {
                 pills.transition(.asymmetric(
@@ -348,10 +427,30 @@ struct BarView: View {
         .shadow(color: .black.opacity(expanded ? 0.28 : 0.18), radius: expanded ? 12 : 6, y: expanded ? 5 : 2)
         .animation(Design.morph, value: expanded)
         .animation(Design.morph, value: size)
+
+        card(layout: layout, expanded: expanded)
+        }
         // Pin the capsule to the top of the panel; the rest of the panel is transparent shadow room.
         .padding(.leading, TopBarPanel.shadowMargin.left)
         .padding(.trailing, TopBarPanel.shadowMargin.right)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// The hover card, hanging below the hovered pill (kept on screen at the bar's edges).
+    @ViewBuilder
+    private func card(layout: BarLayout, expanded: Bool) -> some View {
+        if expanded, let id = barState.hoveredWindowID,
+           let index = store.windows.firstIndex(where: { $0.id == id }) {
+            let room = max(layout.size.width, BarLayout.cardSize.width)
+            let limit = (room - BarLayout.cardSize.width) / 2
+            let offset = min(max(layout.pillCenterOffset(at: index), -limit), limit)
+            PreviewCard(window: store.windows[index], store: store)
+                .offset(x: offset)
+                .transition(.opacity
+                    .combined(with: .scale(scale: 0.96, anchor: .top))
+                    .combined(with: .modifier(active: BlurModifier(radius: 4), identity: BlurModifier(radius: 0))))
+                .animation(Design.morph, value: offset)
+        }
     }
 
     /// Collapsed: just the status dots. A click expands right away.
@@ -574,5 +673,101 @@ struct StatusDot: View {
         }
         .frame(width: 18, height: 18)
         .animation(.easeOut(duration: 0.2), value: state)
+    }
+}
+
+/// Hover card for one window: what it's doing, asking or finished with, plus Allow / Open.
+struct PreviewCard: View {
+    @ObservedObject var window: ManagedWindow
+    let store: SessionStore
+
+    var body: some View {
+        let preview = window.preview
+        let shape = RoundedRectangle(cornerRadius: BarLayout.outerRadius, style: .continuous)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                StatusDot(state: preview.state)
+                Text(window.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text(preview.headline)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(preview.state == .idle ? AnyShapeStyle(.secondary) : AnyShapeStyle(preview.state.color))
+                    .lineLimit(1)
+            }
+            if !preview.task.isEmpty {
+                Label {
+                    Text(preview.task).lineLimit(2)
+                } icon: {
+                    Image(systemName: "text.bubble")
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            }
+            Text(preview.message.isEmpty ? placeholder(for: preview.state) : preview.message)
+                .font(preview.canAllow ? .system(size: 12, design: .monospaced) : .system(size: 12))
+                .foregroundStyle(preview.message.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                .lineLimit(preview.task.isEmpty ? 5 : 3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                Spacer()
+                if preview.canAllow {
+                    CardButton(title: "Allow", tint: .green) { store.allow(window) }
+                        .help("Answers Yes to this permission request in the terminal")
+                }
+                CardButton(title: "Open", tint: nil) { store.show(window) }
+            }
+        }
+        .padding(12)
+        .frame(width: BarLayout.cardSize.width, height: BarLayout.cardSize.height, alignment: .topLeading)
+        .background(.regularMaterial, in: shape)
+        .overlay(
+            shape.strokeBorder(
+                LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.05)], startPoint: .top, endPoint: .bottom),
+                lineWidth: 0.5
+            )
+        )
+        .shadow(color: .black.opacity(0.28), radius: 12, y: 5)
+        .animation(.easeOut(duration: 0.2), value: preview)
+    }
+
+    private func placeholder(for state: ActivityState) -> String {
+        switch state {
+        case .idle: return "Nothing going on."
+        case .working: return "Working…"
+        case .done: return "Finished."
+        case .needsInput: return "Waiting for you."
+        }
+    }
+}
+
+/// A small capsule button for the card. Prominent (filled) when tinted.
+struct CardButton: View {
+    let title: String
+    let tint: Color?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.white))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(Color.primary.opacity(0.1))))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(CardButtonStyle())
+    }
+}
+
+private struct CardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .brightness(configuration.isPressed ? -0.05 : 0)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

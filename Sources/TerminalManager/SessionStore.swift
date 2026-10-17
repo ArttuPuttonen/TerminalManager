@@ -165,6 +165,17 @@ final class SessionStore: ObservableObject {
         refreshSoon()
     }
 
+    /// Approves the permission request in this window: types "1" (Yes) into Claude's prompt.
+    /// Re-checks that a permission request is still waiting first, so it never types into a
+    /// prompt that was already answered.
+    func allow(_ window: ManagedWindow) {
+        guard let tab = window.permissionTab else { return }
+        bridge.type("1", windowID: window.id, tab: tab.index)
+        ClaudeHooks.markAnswered(tty: tab.tty)
+        window.tick()
+        refreshSoon()
+    }
+
     func newWindow() {
         bridge.newWindow()
         refreshSoon()

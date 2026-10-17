@@ -190,6 +190,13 @@ final class TerminalBridge: @unchecked Sendable {
         """)
     }
 
+    /// Types `text` followed by Return into a tab, without bringing it to the front.
+    func type(_ text: String, windowID: Int, tab: Int) {
+        run("""
+        tell application id "com.apple.Terminal" to do script "\(Self.escape(text))" in tab \(tab) of window id \(windowID)
+        """)
+    }
+
     /// Opens a new Terminal window, optionally in a folder.
     func newWindow(in directory: String? = nil) {
         // Shell-quote the path, then escape the whole command for the AppleScript string.

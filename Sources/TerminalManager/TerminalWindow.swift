@@ -66,8 +66,12 @@ final class TabMonitor {
     /// Set on the tick where the tab stops working after real work; read once by the window.
     private(set) var alertPending = false
     private(set) var diagnostics = ""
-    /// What Claude said it needs (e.g. "Claude needs your permission to use Bash"), when hooks are on.
-    private(set) var hookDetail = ""
+    /// What Claude Code reported for the session running in this tab, when hooks are connected.
+    private(set) var hook: ClaudeHooks.Status?
+    /// When the current state began (for "working 3m", "waiting 5m").
+    private(set) var stateSince = Date()
+    /// When it entered the current state, or finished, for display.
+    var displaySince: Date { state == .done ? (doneAt ?? stateSince) : stateSince }
     /// When the current "done" happened; identifies it so seeing it can retire it.
     private var doneAt: Date?
     /// The latest "done" you have looked at, and the latest one you looked at and then left.
@@ -146,12 +150,12 @@ final class TabMonitor {
             let quiet = now.timeIntervalSince(lastActivity) >= Settings.shared.quietSeconds
             let typingRecently = now.timeIntervalSince(lastInput) < 2
 
-            hookDetail = ""
+            self.hook = nil
             if let hook = ClaudeHooks.status(forTTY: tty),
                hook.time >= (commandStartedAt ?? now).addingTimeInterval(-2) {
                 // Exact: Claude Code told us what it's doing (see ClaudeHooks).
                 source = "claude-hooks"
-                hookDetail = hook.detail
+                self.hook = hook
                 newState = hook.state == .done ? doneState(finishedAt: hook.time, viewed: viewed) : hook.state
             } else {
                 // Guess from output and CPU. Without hooks we can't tell "asking you something"
@@ -179,6 +183,7 @@ final class TabMonitor {
             }
         } else {
             processName = shell?.name.trimmingCharacters(in: CharacterSet(charactersIn: "-")) ?? ""
+            hook = nil
             let ranFor = commandStartedAt.map { now.timeIntervalSince($0) } ?? 0
             if commandStartedAt != nil && ranFor > 5 {
                 newState = doneState(finishedAt: now, viewed: viewed)
@@ -204,6 +209,7 @@ final class TabMonitor {
             lastAlertAt = now
         }
         if newState != .working { workStartedAt = nil }
+        if newState != state { stateSince = now }
         state = newState
 
         diagnostics = String(
@@ -251,6 +257,17 @@ final class ManagedWindow: ObservableObject, Identifiable {
     @Published private(set) var isHidden = false
     @Published private(set) var isFrontmostWindow = false
     @Published private(set) var tabCount = 1
+    /// What the hover card shows for this window.
+    struct Preview: Equatable {
+        var state: ActivityState
+        var headline: String
+        var message: String
+        var task: String
+        /// A permission request we can answer with "Allow" from the card.
+        var canAllow: Bool
+    }
+    @Published private(set) var preview = Preview(state: .idle, headline: "", message: "", task: "", canAllow: false)
+
     /// Never auto-hide this window.
     @Published var keepOpen = false
 
@@ -280,6 +297,22 @@ final class ManagedWindow: ObservableObject, Identifiable {
         tabs.max { a, b in
             let ua = monitors[a.tty]?.state.urgency ?? 0, ub = monitors[b.tty]?.state.urgency ?? 0
             return ua != ub ? ua < ub : (!a.selected && b.selected)
+        }
+    }
+
+    /// "<1m", "3m", "1h 5m".
+    static func elapsed(since date: Date) -> String {
+        let minutes = Int(Date().timeIntervalSince(date) / 60)
+        if minutes < 1 { return "<1m" }
+        if minutes < 60 { return "\(minutes)m" }
+        return "\(minutes / 60)h \(minutes % 60)m"
+    }
+
+    /// The tab whose permission request "Allow" answers, re-checked right before sending.
+    var permissionTab: TabSnapshot? {
+        tabs.first { tab in
+            guard let status = ClaudeHooks.status(forTTY: tab.tty) else { return false }
+            return status.state == .needsInput && status.ask == .permission
         }
     }
 
@@ -334,20 +367,46 @@ final class ManagedWindow: ObservableObject, Identifiable {
         if let dir = selectedMonitor?.directory, dir != directory { directory = dir }
 
         let program = monitor?.programLabel ?? ""
+        let hook = monitor?.hook
+        let elapsed = monitor.map { Self.elapsed(since: $0.displaySince) } ?? ""
         var newDetail: String
         switch newState {
         case .needsInput:
-            if let asked = monitor?.hookDetail, !asked.isEmpty {
-                newDetail = asked.replacingOccurrences(of: "Claude needs your permission to use ", with: "Allow ")
-            } else {
-                newDetail = program.isEmpty ? "Needs you" : "\(program) · needs you"
+            switch hook?.ask {
+            case .permission: newDetail = "Permission · \(elapsed)"
+            case .question: newDetail = "Question · \(elapsed)"
+            case .plan: newDetail = "Plan to review · \(elapsed)"
+            case nil: newDetail = "Needs you · \(elapsed)"
             }
-        case .working: newDetail = program.isEmpty ? "Working" : program
-        case .done: newDetail = "Finished"
+        case .working: newDetail = (program.isEmpty ? "Working" : program) + " · \(elapsed)"
+        case .done: newDetail = "Done \(elapsed) ago"
         case .idle: newDetail = (directory as NSString).abbreviatingWithTildeInPath
         }
         if tabs.count > 1 { newDetail = "\(tabs.count) tabs · " + newDetail }
         if newDetail != detail { detail = newDetail }
+
+        let headline: String
+        switch newState {
+        case .needsInput:
+            switch hook?.ask {
+            case .permission: headline = "Wants permission · waiting \(elapsed)"
+            case .question: headline = "Asking you · waiting \(elapsed)"
+            case .plan: headline = "Plan ready · waiting \(elapsed)"
+            case nil: headline = "Needs you · \(elapsed)"
+            }
+        case .working: headline = "Working · \(elapsed)"
+        case .done: headline = "Done \(elapsed) ago"
+        case .idle: headline = "Idle"
+        }
+        let message: String
+        switch newState {
+        case .working, .needsInput, .done: message = hook?.detail ?? ""
+        case .idle: message = (directory as NSString).abbreviatingWithTildeInPath
+        }
+        let newPreview = Preview(state: newState, headline: headline, message: message,
+                                 task: hook?.task ?? "",
+                                 canAllow: newState == .needsInput && hook?.ask == .permission)
+        if newPreview != preview { preview = newPreview }
 
         // Looking at it while it waits for you (or sits idle) arms auto-hide.
         if viewed, !wasViewed, newState != .working { autoHideArmed = true }
