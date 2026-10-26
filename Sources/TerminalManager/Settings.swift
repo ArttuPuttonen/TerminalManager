@@ -14,7 +14,7 @@ final class Settings {
             Keys.soundVolume: 0.25, // quiet by default; full volume is startling
             Keys.quietSeconds: 4.0,
             Keys.keepMinimizedInBar: true,
-            Keys.oneAtATime: true,
+            Keys.maxOpenWindows: 2,
         ])
     }
 
@@ -28,7 +28,7 @@ final class Settings {
         static let didSetUpLoginItem = "didSetUpLoginItem"
         // New key: the old setting meant the flashing method, this one the no-flash one.
         static let keepMinimizedInBar = "takeMinimizedOutOfDock"
-        static let oneAtATime = "oneAtATime"
+        static let maxOpenWindows = "maxOpenWindows"
     }
 
     /// Hide a Terminal window automatically once it goes back to working on its own. Opt-in.
@@ -68,10 +68,11 @@ final class Settings {
         set { defaults.set(newValue, forKey: Keys.keepMinimizedInBar) }
     }
 
-    /// Opening a terminal from its pill hides the other open ones (except "Keep Open" ones).
-    var oneAtATime: Bool {
-        get { defaults.bool(forKey: Keys.oneAtATime) }
-        set { defaults.set(newValue, forKey: Keys.oneAtATime) }
+    /// How many terminals may be open at once when you open one from its pill; more are hidden
+    /// into the bar. 0 means no limit. "Keep Open" windows don't count and are never hidden.
+    var maxOpenWindows: Int {
+        get { defaults.integer(forKey: Keys.maxOpenWindows) }
+        set { defaults.set(newValue, forKey: Keys.maxOpenWindows) }
     }
 
     /// Whether we already turned on "Open at Login" once (so we never override your choice).

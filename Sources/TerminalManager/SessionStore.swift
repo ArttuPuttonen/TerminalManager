@@ -109,12 +109,7 @@ final class SessionStore: ObservableObject {
 
     func show(_ window: ManagedWindow) {
         guard let tab = window.urgentTab ?? window.tabs.first else { return }
-        // One terminal at a time: put the others away (into the bar, not the Dock), except pinned ones.
-        if Settings.shared.oneAtATime {
-            for other in windows where other !== window && !other.isHidden && !other.keepOpen {
-                hide(other)
-            }
-        }
+        makeRoom(for: window)
         bridge.show(windowID: window.id, tab: tab.index)
         window.assume(hidden: false, frontmost: true)
         Notifier.shared.clear(for: window)
@@ -138,6 +133,26 @@ final class SessionStore: ObservableObject {
     func showNextNeedingAttention() {
         let ordered = windows.filter { $0.state == .needsInput } + windows.filter { $0.state == .done }
         if let window = ordered.first { show(window) }
+    }
+
+    /// Keeps at most "Terminals Open at Once" windows on screen (pinned ones don't count) by
+    /// hiding into the bar the ones you're least likely to need: the one whose task finished
+    /// longest ago goes first, then ones still working; ones waiting for you go last.
+    private func makeRoom(for window: ManagedWindow) {
+        let limit = Settings.shared.maxOpenWindows
+        guard limit > 0 else { return }
+        let open = windows.filter { $0 !== window && !$0.isHidden && !$0.keepOpen }
+        let excess = open.count - (limit - 1)
+        guard excess > 0 else { return }
+        func rank(_ w: ManagedWindow) -> (Int, Date) {
+            switch w.state {
+            case .idle, .done: return (0, w.restingSince)
+            case .working: return (1, w.restingSince)
+            case .needsInput: return (2, w.restingSince)
+            }
+        }
+        let byPriority = open.sorted { rank($0) < rank($1) }
+        byPriority.prefix(excess).forEach { hide($0) }
     }
 
     func hideAll() {

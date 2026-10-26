@@ -268,6 +268,9 @@ final class ManagedWindow: ObservableObject, Identifiable {
     }
     @Published private(set) var preview = Preview(state: .idle, headline: "", message: "", task: "", canAllow: false)
 
+    /// When it finished (done/idle) or entered its current state, for choosing what to hide.
+    private(set) var restingSince = Date()
+
     /// Never auto-hide this window.
     @Published var keepOpen = false
 
@@ -409,6 +412,7 @@ final class ManagedWindow: ObservableObject, Identifiable {
                                  task: hook?.task ?? "",
                                  canAllow: newState == .needsInput && hook?.ask == .permission)
         if newPreview != preview { preview = newPreview }
+        if let since = monitor?.displaySince { restingSince = since }
 
         // Looking at it while it waits for you (or sits idle) arms auto-hide.
         if viewed, !wasViewed, newState != .working { autoHideArmed = true }
