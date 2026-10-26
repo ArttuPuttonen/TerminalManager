@@ -107,7 +107,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(to: menu, "Auto-Hide When Working Again", #selector(toggleAutoHide), on: settings.autoHide)
         add(to: menu, "Take Minimized Windows Out of the Dock", #selector(toggleKeepInBar), on: settings.keepMinimizedInBar)
         add(to: menu, "Notifications", #selector(toggleNotifications), on: settings.notifications)
-        add(to: menu, "Sounds", #selector(toggleSound), on: settings.sound)
+        let soundItem = NSMenuItem(title: "Sound Volume", action: nil, keyEquivalent: "")
+        let soundMenu = NSMenu()
+        for (title, level) in [("Off", 0.0), ("Quiet", 0.25), ("Medium", 0.5), ("Loud", 0.9)] {
+            let item = NSMenuItem(title: title, action: #selector(setVolume(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = level
+            item.state = abs(settings.soundVolume - level) < 0.01 ? .on : .off
+            soundMenu.addItem(item)
+        }
+        soundItem.submenu = soundMenu
+        menu.addItem(soundItem)
         add(to: menu, "Open at Login", #selector(toggleLogin), on: Permissions.opensAtLogin)
 
         let quietItem = NSMenuItem(title: "“Needs You” After Silence Of", action: nil, keyEquivalent: "")
@@ -194,7 +204,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleOneAtATime() { Settings.shared.oneAtATime.toggle() }
     @objc private func toggleAutoHide() { Settings.shared.autoHide.toggle() }
     @objc private func toggleNotifications() { Settings.shared.notifications.toggle() }
-    @objc private func toggleSound() { Settings.shared.sound.toggle() }
+    @objc private func setVolume(_ sender: NSMenuItem) {
+        guard let level = sender.representedObject as? Double else { return }
+        Settings.shared.soundVolume = level
+        Notifier.shared.playSound(for: .done, volume: level) // preview
+    }
     @objc private func toggleLogin() { Permissions.setOpensAtLogin(!Permissions.opensAtLogin) }
     @objc private func setQuiet(_ sender: NSMenuItem) {
         if let seconds = sender.representedObject as? Double { Settings.shared.quietSeconds = seconds }

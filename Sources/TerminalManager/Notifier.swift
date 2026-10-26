@@ -22,9 +22,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func post(for window: ManagedWindow, title: String, body: String) {
-        if Settings.shared.sound {
-            NSSound(named: window.state == .done ? "Glass" : "Ping")?.play()
-        }
+        playSound(for: window.state)
         guard Settings.shared.notifications, let center else { return }
         let content = UNMutableNotificationContent()
         content.title = title
@@ -33,6 +31,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.threadIdentifier = String(window.id)
         let request = UNNotificationRequest(identifier: String(window.id), content: content, trigger: nil)
         center.add(request)
+    }
+
+    /// Done is a soft "Pop"; needs-you keeps a "Ping" so the two are easy to tell apart.
+    func playSound(for state: ActivityState, volume: Double? = nil) {
+        let level = volume ?? Settings.shared.soundVolume
+        guard level > 0, let sound = NSSound(named: state == .done ? "Pop" : "Ping")?.copy() as? NSSound else { return }
+        sound.volume = Float(level)
+        sound.play()
     }
 
     func clear(for window: ManagedWindow) {

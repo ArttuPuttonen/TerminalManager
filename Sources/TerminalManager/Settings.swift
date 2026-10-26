@@ -11,6 +11,7 @@ final class Settings {
             Keys.autoHide: false, // off: hiding a window you're still thinking in is jarring
             Keys.notifications: true,
             Keys.sound: true,
+            Keys.soundVolume: 0.25, // quiet by default; full volume is startling
             Keys.quietSeconds: 4.0,
             Keys.keepMinimizedInBar: true,
             Keys.oneAtATime: true,
@@ -22,6 +23,7 @@ final class Settings {
         static let autoHide = "autoHideEnabled"
         static let notifications = "notifications"
         static let sound = "sound"
+        static let soundVolume = "soundVolume"
         static let quietSeconds = "quietSeconds"
         static let didSetUpLoginItem = "didSetUpLoginItem"
         // New key: the old setting meant the flashing method, this one the no-flash one.
@@ -43,6 +45,15 @@ final class Settings {
     var sound: Bool {
         get { defaults.bool(forKey: Keys.sound) }
         set { defaults.set(newValue, forKey: Keys.sound) }
+    }
+
+    /// 0...1. Zero means no sound.
+    var soundVolume: Double {
+        get { sound ? defaults.double(forKey: Keys.soundVolume) : 0 }
+        set {
+            sound = newValue > 0
+            if newValue > 0 { defaults.set(newValue, forKey: Keys.soundVolume) }
+        }
     }
 
     /// How long a running program must be silent (and idle on CPU) before we assume it waits for you.
